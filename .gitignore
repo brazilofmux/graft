@@ -1,0 +1,9 @@
+build/
+out/
+*.o
+*.a
+*.so
+*.dylib
+.DS_Store
+/corpus/private/
+/bench/results/
