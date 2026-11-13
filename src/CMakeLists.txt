@@ -3,7 +3,10 @@ configure_file(build_info.h.in ${CMAKE_CURRENT_BINARY_DIR}/build_info.h @ONLY)
 add_library(graft
   version.cpp
   status.cpp
-  hash.cpp)
+  hash.cpp
+  io.cpp
+  encode.cpp
+  decode.cpp)
 add_library(graft::graft ALIAS graft)
 
 target_include_directories(graft

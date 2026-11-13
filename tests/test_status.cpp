@@ -17,7 +17,7 @@ TEST(status_strings_are_distinct_and_nonnull) {
 }
 
 TEST(versions_are_populated) {
-    CHECK_EQ(std::string(graft_version()), std::string("0.0.1"));
+    CHECK_EQ(std::string(graft_version()), std::string("0.1.0"));
     const std::string deps = graft_dependency_versions();
     CHECK(deps.find("zstd ") != std::string::npos);
     CHECK(deps.find("libsais ") != std::string::npos);

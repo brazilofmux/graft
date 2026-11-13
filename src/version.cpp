@@ -7,7 +7,7 @@
 
 #include <string>
 
-static_assert(GRAFT_VERSION_MAJOR == 0 && GRAFT_VERSION_MINOR == 0 && GRAFT_VERSION_PATCH == 1,
+static_assert(GRAFT_VERSION_MAJOR == 0 && GRAFT_VERSION_MINOR == 1 && GRAFT_VERSION_PATCH == 0,
               "graft.h version macros out of sync with CMake project version");
 
 extern "C" const char *graft_version(void) { return GRAFT_VERSION_STRING; }

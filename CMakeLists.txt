@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(graft
-  VERSION 0.0.1
+  VERSION 0.1.0
   DESCRIPTION "Binary patching: deltas, masked/multi-source patch packages, versioned archives"
   LANGUAGES C CXX)
 
@@ -36,6 +36,9 @@ endif()
 if(GRAFT_FUZZ)
   # Instrument everything for coverage; only fuzz targets link the libFuzzer main.
   add_compile_options(-fsanitize=fuzzer-no-link)
+  # Skips hash comparisons in the decoder so mutated patches get past them.
+  # The conventional macro; never set in production builds.
+  add_compile_definitions(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
 endif()
 
 add_subdirectory(src)

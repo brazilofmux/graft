@@ -7,6 +7,11 @@ function(graft_fuzz_target name src)
   graft_warnings(fuzz_${name})
 endfunction()
 
-# M0: a harness that exercises the pipeline. Real targets (patch decoder,
-# archive reader, mask spec parser) are added with those parsers.
 graft_fuzz_target(hash fuzz_hash.cpp)
+graft_fuzz_target(apply fuzz_apply.cpp)
+graft_fuzz_target(roundtrip fuzz_roundtrip.cpp)
+
+# Seed generator for fuzz_apply (an ordinary program, no libFuzzer main).
+add_executable(fuzz_mkseeds fuzz_mkseeds.cpp)
+target_link_libraries(fuzz_mkseeds PRIVATE graft::graft)
+graft_warnings(fuzz_mkseeds)

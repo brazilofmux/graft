@@ -52,7 +52,10 @@ jobs:
       - name: Run fuzzers
         run: |
           set -e
+          mkdir -p fuzz/corpus/apply
+          build/fuzz/fuzz/fuzz_mkseeds fuzz/corpus/apply
           for f in build/fuzz/fuzz/fuzz_*; do
+            [[ $f == *fuzz_mkseeds ]] && continue
             name=${f##*/fuzz_}
             mkdir -p fuzz/corpus/$name
             echo "== $name"

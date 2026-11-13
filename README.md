@@ -9,8 +9,15 @@ versions, whole trees), and JAR32-style multi-version archives.
 - `graft archive`: a versioned archive that can extract any version and
   generate a patch from any set of versions
 
-Status: **M0** (build, CI, fuzzing, benchmark harness). There's no delta
-code yet. See [docs/SCOPE.md](docs/SCOPE.md) for the plan.
+Status: **M1**. Single-file diff and apply work, in the `.gft` v1 format
+([docs/FORMAT.md](docs/FORMAT.md)). See [docs/SCOPE.md](docs/SCOPE.md) for the plan.
+
+```sh
+graft diff OLD NEW PATCH        # -l LEVEL (zstd 1-22, default 19), -b BLOCK (bytes)
+graft apply OLD PATCH NEW       # writes NEW only if every check passes
+graft verify OLD PATCH
+graft info PATCH
+```
 
 ## Building
 
