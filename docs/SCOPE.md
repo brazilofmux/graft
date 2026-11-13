@@ -74,6 +74,11 @@ multi-version archive of JAR32.
   in that sandbox. That keeps the decoder honest about its dependencies,
   gives a 32-bit target, and provides a way to apply untrusted patches in
   isolation. A 16-bit DOS applier is a stretch goal.
+- **Toolchains:** the SLOW-32 build uses the existing `~/llvm-project/build`
+  through `SLOW32_HOME=~/slow-32`, which `~/slow-32` depends on. graft
+  treats both as read-only and never reconfigures or rebuilds them. Fuzzing
+  on the Mac uses Homebrew's `llvm` (for libFuzzer), and ASan and UBSan use
+  Apple clang.
 
 ## Non-goals
 - Version control (branches, merges, history semantics); the archive is
