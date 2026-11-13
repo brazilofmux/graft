@@ -9,3 +9,4 @@ out/
 /bench/results/
 compile_commands.json
 /fuzz/corpus/
+.cache/
