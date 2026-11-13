@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / ${{ matrix.preset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+        preset: [dev, asan]
+        include:
+          # A clean machine: every dependency downloaded and pinned by hash.
+          - os: ubuntu-latest
+            preset: fetch
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja zstd libsais blake3
+
+      - name: Dependencies (Linux)
+        if: runner.os == 'Linux'
+        # libsais and BLAKE3 aren't packaged; GRAFT_DEPS=auto downloads them.
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libzstd-dev
+
+      - run: cmake --preset ${{ matrix.preset }}
+      - run: cmake --build --preset ${{ matrix.preset }}
+      - run: ctest --preset ${{ matrix.preset }}
+
+  fuzz:
+    name: fuzz (60s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build libzstd-dev
+      - run: cmake --preset fuzz
+      - run: cmake --build --preset fuzz
+      - name: Run fuzzers
+        run: |
+          set -e
+          for f in build/fuzz/fuzz/fuzz_*; do
+            name=${f##*/fuzz_}
+            mkdir -p fuzz/corpus/$name
+            echo "== $name"
+            "$f" fuzz/corpus/$name -max_total_time=60 -print_final_stats=1
+          done

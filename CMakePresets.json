@@ -1,0 +1,75 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": { "GRAFT_WERROR": "ON" }
+    },
+    {
+      "name": "dev",
+      "displayName": "Debug, warnings as errors",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "release",
+      "displayName": "Optimized with debug info",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "asan",
+      "displayName": "Debug + AddressSanitizer + UBSan",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "GRAFT_SANITIZE": "ON" }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "libFuzzer targets (clang from PATH)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "GRAFT_FUZZ": "ON",
+        "GRAFT_TESTS": "OFF",
+        "GRAFT_TOOLS": "OFF"
+      }
+    },
+    {
+      "name": "fuzz-macos",
+      "displayName": "libFuzzer targets (Homebrew LLVM; Apple clang lacks libFuzzer)",
+      "inherits": "fuzz",
+      "binaryDir": "${sourceDir}/build/fuzz",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
+        "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++"
+      }
+    },
+    {
+      "name": "fetch",
+      "displayName": "Debug, download all deps (as on a clean machine)",
+      "inherits": "dev",
+      "cacheVariables": { "GRAFT_DEPS": "fetch" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev",        "configurePreset": "dev" },
+    { "name": "release",    "configurePreset": "release" },
+    { "name": "asan",       "configurePreset": "asan" },
+    { "name": "fuzz",       "configurePreset": "fuzz" },
+    { "name": "fuzz-macos", "configurePreset": "fuzz-macos" },
+    { "name": "fetch",      "configurePreset": "fetch" }
+  ],
+  "testPresets": [
+    { "name": "dev",     "configurePreset": "dev",     "output": { "outputOnFailure": true } },
+    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
+    { "name": "asan",    "configurePreset": "asan",    "output": { "outputOnFailure": true } },
+    { "name": "fetch",   "configurePreset": "fetch",   "output": { "outputOnFailure": true } }
+  ]
+}

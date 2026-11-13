@@ -1,0 +1,2 @@
+#pragma once
+#define GRAFT_VERSION_STRING "@PROJECT_VERSION@"
