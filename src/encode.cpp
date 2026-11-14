@@ -348,7 +348,8 @@ extern "C" void graft_diff_options_init(graft_diff_options *o) {
 }
 
 extern "C" uint8_t graft_filter_detect(const void *data, size_t len) {
-    return data ? graft::filter_detect(static_cast<const uint8_t *>(data), len) : GRAFT_FILTER_NONE;
+    if (!data) return GRAFT_FILTER_NONE;
+    return graft::filter_detect(static_cast<const uint8_t *>(data), len);
 }
 
 extern "C" graft_status graft_diff(const void *source, size_t source_len, const void *target, size_t target_len,
