@@ -33,18 +33,20 @@ void usage(std::FILE *out) {
         "usage: graft <command> [args]\n"
         "\n"
         "commands:\n"
-        "  diff [-l LEVEL] [-b BLOCK] [--mask SPEC]... [--mask-file FILE] OLD NEW PATCH\n"
+        "  diff [-l LEVEL] [-b BLOCK] [-f FILTER] [--mask SPEC]... [--mask-file FILE] OLD NEW PATCH\n"
         "                   write a patch turning OLD into NEW. Masked regions\n"
         "                   keep the installed file's bytes (serials, keys):\n"
         "                     at=OFF:LEN | old=OFF:LEN,new=OFF:LEN |\n"
         "                     marker=TEXT|hex:HEX,len=N[,skip=K]\n"
         "                     [,newlen=N,pad=BYTE|truncate]\n"
+        "                   FILTER: auto (default), none, x86, x86-16, z80, arm64, slow32\n"
         "  apply OLD PATCH NEW\n"
         "                   apply PATCH to OLD, writing NEW\n"
         "  verify OLD PATCH check that PATCH applies cleanly to OLD\n"
         "  info PATCH       print a patch's header\n"
         "\n"
         "  pack [-l LEVEL] [--label NAME] [--mask GLOB=SPEC]... [--mask-file FILE]\n"
+        "       [--filter GLOB=FILTER]...\n"
         "       -o PACKAGE NEW_DIR OLD_DIR[=LABEL]...\n"
         "                   write a package updating any OLD_DIR tree to NEW_DIR.\n"
         "                   GLOB: * within a path component, ** across, ? one char\n"
@@ -179,6 +181,21 @@ private:
 
 // --- commands ------------------------------------------------------------------
 
+const char *const kFilterNames[] = {"none", "x86", "x86-16", "z80", "arm64", "slow32"};
+
+bool parse_filter(std::string_view name, uint8_t &out) {
+    if (name == "auto") {
+        out = GRAFT_FILTER_AUTO;
+        return true;
+    }
+    for (uint8_t i = 0; i < sizeof kFilterNames / sizeof *kFilterNames; ++i)
+        if (name == kFilterNames[i]) {
+            out = i;
+            return true;
+        }
+    return false;
+}
+
 bool parse_uint(const char *s, unsigned long &out) {
     char *end;
     errno = 0;
@@ -200,6 +217,11 @@ int cmd_diff(int argc, char **argv) {
         } else if ((a == "-b" || a == "--block-size") && i + 1 < argc && parse_uint(argv[i + 1], v)) {
             opts.block_size = static_cast<uint32_t>(v);
             ++i;
+        } else if ((a == "-f" || a == "--filter") && i + 1 < argc) {
+            if (!parse_filter(argv[++i], opts.filter)) {
+                std::fprintf(stderr, "graft diff: unknown filter '%s'\n", argv[i]);
+                return kExitUsage;
+            }
         } else if (a == "--mask" && i + 1 < argc) {
             specs.emplace_back(argv[++i]);
         } else if (a == "--mask-file" && i + 1 < argc) {
@@ -307,6 +329,24 @@ struct MaskRules {
     std::string error;
 };
 
+struct FilterRules {
+    std::vector<std::pair<std::string, uint8_t>> rules;  // glob, filter; first match wins
+};
+
+uint8_t filter_for(void *ctx, const char *path) {
+    for (const auto &[glob, f] : static_cast<FilterRules *>(ctx)->rules)
+        if (glob_match(glob.c_str(), path)) return f;
+    return GRAFT_FILTER_AUTO;
+}
+
+bool add_filter_rule(FilterRules &fr, const std::string &item) {
+    const auto eq = item.rfind('=');
+    uint8_t f;
+    if (eq == std::string::npos || eq == 0 || !parse_filter(item.substr(eq + 1), f)) return false;
+    fr.rules.emplace_back(item.substr(0, eq), f);
+    return true;
+}
+
 graft_status masks_for(void *ctx, const char *path, const uint8_t *oldp, size_t oldn, const uint8_t *newp, size_t newn,
                        graft_mask *out, size_t cap, size_t *count) {
     auto *mr = static_cast<MaskRules *>(ctx);
@@ -338,6 +378,7 @@ int cmd_pack(int argc, char **argv) {
     graft_pack_options opts;
     graft_pack_options_init(&opts);
     MaskRules rules;
+    FilterRules frules;
     const char *out = nullptr, *label = nullptr;
     std::vector<const char *> pos;
     for (int i = 0; i < argc; ++i) {
@@ -350,6 +391,11 @@ int cmd_pack(int argc, char **argv) {
             out = argv[++i];
         } else if (a == "--label" && i + 1 < argc) {
             label = argv[++i];
+        } else if (a == "--filter" && i + 1 < argc) {
+            if (!add_filter_rule(frules, argv[++i])) {
+                std::fprintf(stderr, "graft pack: --filter wants GLOB=NAME, got '%s'\n", argv[i]);
+                return kExitUsage;
+            }
         } else if (a == "--mask" && i + 1 < argc) {
             if (!add_rule(rules, argv[++i])) {
                 std::fprintf(stderr, "graft pack: --mask wants GLOB=SPEC, got '%s'\n", argv[i]);
@@ -401,6 +447,10 @@ int cmd_pack(int argc, char **argv) {
     if (rules.rules.size()) {
         opts.masks_for = masks_for;
         opts.masks_ctx = &rules;
+    }
+    if (frules.rules.size()) {
+        opts.filter_for = filter_for;
+        opts.filter_ctx = &frules;
     }
     opts.log = log_to_stderr;
     if (graft_status st = graft_pack(pos[0], new_label.c_str(), dp.data(), lp.data(), dp.size(), out, &opts);
@@ -459,6 +509,7 @@ int cmd_archive(int argc, char **argv) {
     graft_pack_options popts;
     graft_pack_options_init(&popts);
     MaskRules rules;
+    FilterRules frules;
     for (int i = 1; i < argc; ++i) {
         const std::string_view a = argv[i];
         unsigned long v;
@@ -470,6 +521,11 @@ int cmd_archive(int argc, char **argv) {
         } else if (sub == "mkpatch" && a == "--mask" && i + 1 < argc) {
             if (!add_rule(rules, argv[++i])) {
                 std::fprintf(stderr, "graft archive mkpatch: --mask wants GLOB=SPEC\n");
+                return kExitUsage;
+            }
+        } else if (sub == "mkpatch" && a == "--filter" && i + 1 < argc) {
+            if (!add_filter_rule(frules, argv[++i])) {
+                std::fprintf(stderr, "graft archive mkpatch: --filter wants GLOB=NAME\n");
                 return kExitUsage;
             }
         } else if (a.size() > 1 && a[0] == '-') {
@@ -536,6 +592,10 @@ int cmd_archive(int argc, char **argv) {
             popts.masks_for = masks_for;
             popts.masks_ctx = &rules;
         }
+        if (!frules.rules.empty()) {
+            popts.filter_for = filter_for;
+            popts.filter_ctx = &frules;
+        }
         if (graft_status st = graft_archive_mkpatch(ar.get(), pos[1], pos.data() + 2, pos.size() - 2, out, &popts);
             st != GRAFT_OK)
             return fail("archive mkpatch", st);
@@ -583,6 +643,9 @@ int cmd_info(const char *path) {
     std::printf("\ntarget:      %llu bytes  ", static_cast<unsigned long long>(info.target_size));
     hex(stdout, info.target_hash, GRAFT_HASH_SIZE);
     std::printf("\nmax stream:  %u bytes\n", info.max_stream);
+    if (info.filter)
+        std::printf("filter:      %s\n", info.filter < sizeof kFilterNames / sizeof *kFilterNames
+                                              ? kFilterNames[info.filter] : "?");
     if (info.mask_count) std::printf("masks:       %u (source and target hashes are of the masked forms)\n", info.mask_count);
     return kExitOk;
 }

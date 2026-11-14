@@ -109,6 +109,7 @@ struct Builder {
         d.level = opts.level;
         d.masks = masks.data();
         d.mask_count = masks.size();
+        if (opts.filter_for) d.filter = opts.filter_for(opts.filter_ctx, path.c_str());
         std::vector<uint8_t> patch;
         graft_sink sink{&patch, [](void *ctx, const void *p, size_t n) {
                             auto *b = static_cast<const uint8_t *>(p);
@@ -362,6 +363,8 @@ extern "C" void graft_pack_options_init(graft_pack_options *o) {
     o->masks_ctx = nullptr;
     o->log = nullptr;
     o->log_ctx = nullptr;
+    o->filter_for = nullptr;
+    o->filter_ctx = nullptr;
 }
 
 extern "C" graft_status graft_pack(const char *new_dir, const char *new_label, const char *const *old_dirs,

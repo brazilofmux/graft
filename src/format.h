@@ -20,7 +20,8 @@ inline constexpr uint8_t kTagBlock = 0x01;
 inline constexpr size_t kMaxVarint = 10;
 inline constexpr size_t kMaxTriple = 3 * kMaxVarint;
 inline constexpr uint16_t kFlagMasks = 0x0001;
-inline constexpr uint16_t kKnownFlags = kFlagMasks;
+inline constexpr uint16_t kFlagFilter = 0x0002;
+inline constexpr uint16_t kKnownFlags = kFlagMasks | kFlagFilter;
 inline constexpr size_t kMaxMasks = 4096;
 
 // Fuzz builds skip hash comparisons (the fuzzer can't forge BLAKE3), so it

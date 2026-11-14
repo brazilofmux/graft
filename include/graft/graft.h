@@ -126,12 +126,37 @@ typedef struct graft_mask {
     uint8_t  pad;   /* fill byte for GRAFT_MASK_PAD */
 } graft_mask;
 
+/* Executable filters: rewrite references so code that moved diffs well.
+ * Lossless on any input; a poor choice only costs ratio.
+ *
+ * For this (bsdiff-class) encoder, absolute references are what hurt: when
+ * code or data moves, every absolute address of it changes, while relative
+ * branches between things that moved together don't. Z80 relativizes
+ * absolute CALL/JP and data addresses, walking instruction boundaries; on
+ * CP/M 2.2 it cut patches by about a third. The rel->abs filters are the
+ * classic BCJ transforms, which help compressors but measured 12-36% worse
+ * here on ARM64 and x86-64 builds; they are kept for explicit use. */
+enum {
+    GRAFT_FILTER_NONE   = 0,
+    GRAFT_FILTER_X86    = 1,   /* x86-32/64: E8/E9/0F 8x rel32 -> absolute (BCJ) */
+    GRAFT_FILTER_X86_16 = 2,   /* 16-bit x86: rel16 -> absolute (BCJ)            */
+    GRAFT_FILTER_Z80    = 3,   /* Z80/8080: absolute CALL/JP/data -> relative    */
+    GRAFT_FILTER_ARM64  = 4,   /* ARM64: B/BL imm26 -> absolute (BCJ)            */
+    GRAFT_FILTER_SLOW32 = 5,   /* SLOW-32: JAL imm21 -> absolute (BCJ)           */
+    GRAFT_FILTER_AUTO   = 255  /* try what the header suggests, keep it only if
+                                  smaller (currently nothing is auto-detected) */
+};
+
+/* The filter graft_diff's GRAFT_FILTER_AUTO would try for this file. */
+GRAFT_API uint8_t graft_filter_detect(const void *data, size_t len);
+
 typedef struct graft_diff_options {
     uint32_t struct_size;  /* sizeof(graft_diff_options); set by _init */
     int      level;        /* zstd level 1..22                          */
     uint32_t block_size;   /* output bytes per block (memory/ratio trade) */
     const graft_mask *masks;  /* any order; regions must not overlap    */
     size_t   mask_count;      /* 0..4096                                 */
+    uint8_t  filter;          /* GRAFT_FILTER_*; default AUTO            */
 } graft_diff_options;
 
 GRAFT_API void graft_diff_options_init(graft_diff_options *opts);
@@ -170,6 +195,7 @@ typedef struct graft_patch_info {
     uint16_t flags;
     uint32_t max_stream;
     uint32_t mask_count;
+    uint8_t  filter;
     uint64_t source_size;
     uint64_t target_size;
     uint8_t  source_hash[GRAFT_HASH_SIZE];
@@ -196,6 +222,9 @@ typedef graft_status (*graft_mask_fn)(void *ctx, const char *path,
                                       const uint8_t *new_data, size_t new_len,
                                       graft_mask *masks, size_t cap, size_t *count);
 
+/* Picks the filter for one file (GRAFT_FILTER_*; AUTO if unsure). */
+typedef uint8_t (*graft_filter_fn)(void *ctx, const char *path);
+
 typedef struct graft_pack_options {
     uint32_t      struct_size;  /* sizeof(graft_pack_options); set by _init */
     int           level;        /* zstd level for deltas and full copies   */
@@ -203,6 +232,8 @@ typedef struct graft_pack_options {
     void         *masks_ctx;
     graft_log_fn  log;          /* NULL: silent                            */
     void         *log_ctx;
+    graft_filter_fn filter_for; /* NULL: AUTO for every file              */
+    void         *filter_ctx;
 } graft_pack_options;
 
 GRAFT_API void graft_pack_options_init(graft_pack_options *opts);

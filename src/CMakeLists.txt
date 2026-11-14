@@ -6,6 +6,7 @@ add_library(graft
   hash.cpp
   io.cpp
   encode.cpp
+  filter.cpp
   decode.cpp
   fsutil.cpp
   tree.cpp

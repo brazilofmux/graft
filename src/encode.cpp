@@ -4,6 +4,7 @@
 // then a forward scan that extends approximate matches in both directions);
 // the suffix array comes from libsais, and the output is .gft v1.
 
+#include "filter.h"
 #include "format.h"
 
 #include <blake3.h>
@@ -254,16 +255,25 @@ graft_status compress(ZSTD_CCtx *cctx, const std::vector<uint8_t> &raw, std::vec
 }
 
 graft_status diff_impl(const uint8_t *src, size_t slen, const uint8_t *tgt, size_t tlen,
-                       const graft_diff_options &o, const std::vector<Mask> &masks, const graft_sink *sink) {
-    // With masks, diff the normalized files: every masked region zeroed.
+                       const graft_diff_options &o, const std::vector<Mask> &masks, uint8_t filter,
+                       const graft_sink *sink) {
+    // With masks, diff the normalized files: every masked region zeroed. The
+    // hashes are of the normalized files; a filter then applies on top.
     std::vector<uint8_t> nsrc, ntgt;
-    if (!masks.empty()) {
+    if (!masks.empty() || filter) {
         nsrc.assign(src, src + slen);
         ntgt.assign(tgt, tgt + tlen);
         for (const Mask &k : masks) {
             std::memset(nsrc.data() + k.old_offset, kMaskFill, static_cast<size_t>(k.old_length));
             std::memset(ntgt.data() + k.new_offset, kMaskFill, static_cast<size_t>(k.new_length));
         }
+    }
+    Header h;
+    graft_hash(masks.empty() ? src : nsrc.data(), slen, h.source_hash);
+    graft_hash(masks.empty() ? tgt : ntgt.data(), tlen, h.target_hash);
+    if (!masks.empty() || filter) {
+        filter_encode(filter, nsrc.data(), nsrc.size());
+        filter_encode(filter, ntgt.data(), ntgt.size());
         src = nsrc.data();
         tgt = ntgt.data();
     }
@@ -275,12 +285,9 @@ graft_status diff_impl(const uint8_t *src, size_t slen, const uint8_t *tgt, size
     make_blocks(src, tgt, controls, o.block_size, blocks);
     controls = {};
 
-    Header h;
-    h.flags = masks.empty() ? 0 : kFlagMasks;
+    h.flags = static_cast<uint16_t>((masks.empty() ? 0 : kFlagMasks) | (filter ? kFlagFilter : 0));
     h.source_size = slen;
     h.target_size = tlen;
-    graft_hash(src, slen, h.source_hash);
-    graft_hash(tgt, tlen, h.target_hash);
     size_t max_stream = 0;
     for (const auto &b : blocks) max_stream = std::max({max_stream, b.ctrl.size(), b.diff.size(), b.extra.size()});
     h.max_stream = static_cast<uint32_t>(max_stream);  // <= block_size <= 1 GiB
@@ -289,6 +296,8 @@ graft_status diff_impl(const uint8_t *src, size_t slen, const uint8_t *tgt, size
     uint8_t hdr[kHeaderSize];
     encode_header(h, hdr);
     if (graft_status st = out.write(hdr, sizeof hdr); st != GRAFT_OK) return st;
+    if (filter)
+        if (graft_status st = out.write(&filter, 1); st != GRAFT_OK) return st;
     if (!masks.empty()) {
         std::vector<uint8_t> table;
         encode_masks(masks, table);
@@ -335,6 +344,11 @@ extern "C" void graft_diff_options_init(graft_diff_options *o) {
     o->block_size = GRAFT_DEFAULT_BLOCK_SIZE;
     o->masks = nullptr;
     o->mask_count = 0;
+    o->filter = GRAFT_FILTER_AUTO;
+}
+
+extern "C" uint8_t graft_filter_detect(const void *data, size_t len) {
+    return data ? graft::filter_detect(static_cast<const uint8_t *>(data), len) : GRAFT_FILTER_NONE;
 }
 
 extern "C" graft_status graft_diff(const void *source, size_t source_len, const void *target, size_t target_len,
@@ -347,6 +361,8 @@ extern "C" graft_status graft_diff(const void *source, size_t source_len, const 
         o = *opts;
     }
     if (o.mask_count > graft::kMaxMasks || (o.mask_count && !o.masks)) return GRAFT_E_INVALID_ARG;
+    if (o.filter != GRAFT_FILTER_AUTO && o.filter != GRAFT_FILTER_NONE && !graft::filter_known(o.filter))
+        return GRAFT_E_INVALID_ARG;
     if (o.level < 1 || o.level > ZSTD_maxCLevel()) return GRAFT_E_INVALID_ARG;
     if (o.block_size < GRAFT_MIN_BLOCK_SIZE || o.block_size > GRAFT_MAX_BLOCK_SIZE) return GRAFT_E_INVALID_ARG;
     try {
@@ -358,8 +374,25 @@ extern "C" graft_status graft_diff(const void *source, size_t source_len, const 
         std::sort(masks.begin(), masks.end(),
                   [](const graft::Mask &a, const graft::Mask &b) { return a.old_offset < b.old_offset; });
         if (!masks.empty() && !graft::masks_valid(masks, source_len, target_len)) return GRAFT_E_INVALID_ARG;
-        return graft::diff_impl(static_cast<const uint8_t *>(source), source_len, static_cast<const uint8_t *>(target),
-                                target_len, o, masks, out);
+        const auto *s = static_cast<const uint8_t *>(source);
+        const auto *t = static_cast<const uint8_t *>(target);
+        if (o.filter != GRAFT_FILTER_AUTO) return graft::diff_impl(s, source_len, t, target_len, o, masks, o.filter, out);
+        // AUTO: if the header suggests a filter, encode both ways and keep the smaller.
+        const uint8_t guess = graft::filter_detect(t, target_len);
+        if (guess == GRAFT_FILTER_NONE) return graft::diff_impl(s, source_len, t, target_len, o, masks, 0, out);
+        std::vector<uint8_t> a, b;
+        graft_sink sa{&a, [](void *ctx, const void *p, size_t n) {
+                          auto *v = static_cast<std::vector<uint8_t> *>(ctx);
+                          v->insert(v->end(), static_cast<const uint8_t *>(p), static_cast<const uint8_t *>(p) + n);
+                          return GRAFT_OK;
+                      }};
+        graft_sink sb{&b, sa.write};
+        if (graft_status st = graft::diff_impl(s, source_len, t, target_len, o, masks, 0, &sa); st != GRAFT_OK)
+            return st;
+        if (graft_status st = graft::diff_impl(s, source_len, t, target_len, o, masks, guess, &sb); st != GRAFT_OK)
+            return st;
+        const auto &best = b.size() < a.size() ? b : a;
+        return out->write(out->ctx, best.data(), best.size());
     } catch (const std::bad_alloc &) {
         return GRAFT_E_NOMEM;
     } catch (const std::length_error &) {

@@ -116,7 +116,8 @@ multi-version archive of JAR32.
 | **M2** | Masked regions on single files |
 | **M3** | Directory trees and multi-source packages, transactional apply. Done 2026-11-13: one delta per distinct old content, shared across versions; renames by content or file name; POSIX file replacement behind std::filesystem, Windows specifics (locked files, ACLs) deferred |
 | **M4** | Versioned archive, plus `mkpatch` from an archive. Done 2026-11-13 |
-| **M5** | Executable filters (x86, Z80, SLOW-32), rolling-hash encoder for very large files, SLOW-32 applier build |
+| **M5a** | Executable filters. Done 2026-11-13. Finding: for a bsdiff-class encoder, relativize *absolute* references and leave relative ones alone. Z80 (boundary-walking, CALL/JP plus data addresses) cut CP/M patches by a third against bsdiff. BCJ-style rel→abs filters (x86, ARM64) made real builds 12–36% worse, so they're explicit-only. Next for executables: an x86-16 filter that relativizes absolute data references and far calls (needs an instruction-length decoder and DOS version pairs), and Courgette-style label alignment for modern PIC code |
+| **M5** | Rolling-hash encoder for very large files; SLOW-32 applier build |
 | **Later** | VCDIFF import/export (xdelta3 interop), self-applying patches, 16-bit DOS applier |
 
 ## Open questions

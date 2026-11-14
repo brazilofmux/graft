@@ -19,6 +19,11 @@ graft verify OLD PATCH
 graft info PATCH
 ```
 
+Executable filters make moved code diff better. `-f z80` relativizes the
+absolute calls, jumps and data addresses of 8080/Z80 code: on CP/M 2.2's
+BDOS with a 3-byte fix inserted, the patch is a third smaller than bsdiff's.
+Packages take `--filter "GLOB=z80"`.
+
 Masked regions keep each install's own bytes (serial numbers, keys). They
 are located when the patch is built, in both versions:
 

@@ -7,7 +7,7 @@ trailing `0x00` byte). `svarint` is a zigzag-encoded
 `uvarint`.
 
 ```
-patch   := header [masks] block* end
+patch   := header [filter:u8] [masks] block* end
 header  := magic[8] version:u16 flags:u16 source_size:u64 target_size:u64
            source_hash[32] target_hash[32] max_stream:u32           (96 bytes)
 block   := 0x01 ctrl_raw ctrl_comp diff_raw diff_comp extra_raw extra_comp  (6 × uvarint)
@@ -20,8 +20,9 @@ mask    := old_offset old_length new_offset new_length  (4 × uvarint)  mode:u8 
 - `magic` is `89 47 46 54 0D 0A 1A 0A` (`\x89GFT\r\n\x1a\n`). As in PNG, the
   high byte and the CR/LF pair catch 7-bit and line-ending damage in transit.
 - `version` is 1. A decoder rejects other versions as *unsupported*.
-- `flags` bit 0 means a mask table follows the header. A decoder rejects any
-  other set bit as *unsupported*.
+- `flags` bit 0 means a mask table follows the header. Bit 1 means a filter
+  byte follows the header (before any mask table). A decoder rejects any
+  other set bit, or an unknown filter, as *unsupported*.
 - `source_hash`, `target_hash` and `patch_hash` are BLAKE3-256. `patch_hash`
   covers every byte before it, including the `0x00` end tag.
 - `max_stream` is the largest `*_raw` value in the file. Decoders compare it
@@ -59,6 +60,27 @@ taking them from the patch.
   `min(old_length, new_length)` bytes, followed by `pad` bytes if the region
   grew. `target_hash` is checked against the output *before* the saved bytes
   are written.
+
+## Filters
+
+A filter is a same-length, exactly invertible transform. The encoder
+applies it to both the normalized source and the normalized target before
+diffing. The decoder applies it to the normalized source, inverts it on the
+delta's output (streaming, holding back a few bytes at a time), and only
+then checks `target_hash` and writes masked regions. The hashes always
+describe the unfiltered files.
+
+| id | filter | transform (positions are file offsets) |
+|---|---|---|
+| 1 | x86 | after each `E8`/`E9` opcode: `rel32 += offset + 5`; after `0F 8x`: `rel32 += offset + 6` (mod 2³²) |
+| 2 | x86-16 | the same with rel16, `+ offset + 3` / `+ offset + 4` (mod 2¹⁶) |
+| 3 | Z80 | walking 8080/Z80 instruction boundaries: the 16-bit operand of `JP`, `CALL` (and conditional forms), `LD rr,nn`, `LD (nn),HL`, `LD HL,(nn)`, `LD (nn),A`, `LD A,(nn)` becomes `nn - (offset + 3)` |
+| 4 | ARM64 | at each 4-byte-aligned word encoding `B`/`BL`: `imm26 += offset / 4` (mod 2²⁶) |
+| 5 | SLOW-32 | at each aligned `JAL` (opcode `0x40`): `imm21 += offset` (mod 2²¹) |
+
+Every decision looks only at opcode bytes, and each rewrite changes only
+bytes after its own offset, which the scan then skips. So the inverse makes
+the same decisions, on any input.
 
 ## Applying
 

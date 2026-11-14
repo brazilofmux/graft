@@ -32,7 +32,7 @@ function(expect_same a b)
   endif()
 endfunction()
 
-run(TRUE "${GRAFT}" pack -l 9 --label 3.0 --mask "bin/*=marker=SERIAL:,len=8"
+run(TRUE "${GRAFT}" pack -l 9 --label 3.0 --mask "bin/*=marker=SERIAL:,len=8" --filter "bin/*=z80"
     -o "${WORK}/up.gfp" "${WORK}/r3" "${WORK}/r1=1.0" "${WORK}/r2=2.0")
 run(TRUE "${GRAFT}" list "${WORK}/up.gfp")
 if(NOT last MATCHES "updates \\[1.0, 2.0\\] to 3.0")

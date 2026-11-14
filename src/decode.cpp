@@ -1,5 +1,6 @@
 // decode.cpp: streaming .gft v1 decoder. Treats the patch as hostile.
 
+#include "filter.h"
 #include "format.h"
 
 #include <blake3.h>
@@ -82,11 +83,16 @@ bool hashes_equal(const uint8_t *a, const uint8_t *b) {
 }
 
 // Header plus, when flagged, the mask table.
-graft_status read_preamble(PatchIn &in, Header &h, std::vector<Mask> &masks) {
+graft_status read_preamble(PatchIn &in, Header &h, std::vector<Mask> &masks, uint8_t &filter) {
     uint8_t raw[kHeaderSize];
     if (graft_status st = in.read(raw, sizeof raw); st != GRAFT_OK) return st;
     if (graft_status st = decode_header(raw, h); st != GRAFT_OK) return st;
     masks.clear();
+    filter = GRAFT_FILTER_NONE;
+    if (h.flags & kFlagFilter) {
+        if (graft_status st = in.read(&filter, 1); st != GRAFT_OK) return st;
+        if (!filter_known(filter)) return GRAFT_E_UNSUPPORTED;
+    }
     if (!(h.flags & kFlagMasks)) return GRAFT_OK;
 
     uint64_t count;
@@ -150,8 +156,9 @@ graft_status hash_source(const graft_source &src, uint8_t out[GRAFT_HASH_SIZE]) 
 class Decoder {
 public:
     Decoder(const graft_source &src, PatchIn &in, const graft_sink &out, const Header &h,
-            const std::vector<Stamp> &stamps)
-        : src_(src), in_(in), out_(out), h_(h), stamps_(stamps), scratch_(1 << 16) {
+            const std::vector<Stamp> &stamps, uint8_t filter)
+        : src_(src), in_(in), out_(out), h_(h), stamps_(stamps), scratch_(1 << 16), filter_(filter),
+          unfilter_(filter) {
         blake3_hasher_init(&target_hash_);
     }
 
@@ -164,6 +171,12 @@ public:
             if (tag == kTagEnd) break;
             if (tag != kTagBlock) return GRAFT_E_CORRUPT;
             if (graft_status st = block(); st != GRAFT_OK) return st;
+        }
+        if (delta_out_ != h_.target_size) return GRAFT_E_CORRUPT;
+        if (filter_) {
+            ready_.clear();
+            unfilter_.finish(ready_);
+            if (graft_status st = emit_final(ready_.data(), ready_.size()); st != GRAFT_OK) return st;
         }
         if (produced_ != h_.target_size) return GRAFT_E_CORRUPT;
 
@@ -192,8 +205,18 @@ private:
         return GRAFT_OK;
     }
 
-    // The target hash covers the normalized output; stamps go on after.
+    // Delta output: (filtered) normalized bytes.
     graft_status emit(const uint8_t *p, size_t n) {
+        if (n == 0) return GRAFT_OK;
+        delta_out_ += n;
+        if (!filter_) return emit_final(p, n);
+        ready_.clear();
+        unfilter_.push(p, n, ready_);
+        return emit_final(ready_.data(), ready_.size());
+    }
+
+    // The target hash covers the normalized output; stamps go on after.
+    graft_status emit_final(const uint8_t *p, size_t n) {
         if (n == 0) return GRAFT_OK;
         blake3_hasher_update(&target_hash_, p, n);
         const uint8_t *outp = p;
@@ -217,7 +240,7 @@ private:
         for (auto &v : len)
             if (graft_status st = in_.read_uvarint(v); st != GRAFT_OK) return st;
         // len = ctrl_raw ctrl_comp diff_raw diff_comp extra_raw extra_comp
-        const uint64_t remaining = h_.target_size - produced_;
+        const uint64_t remaining = h_.target_size - delta_out_;
         if (len[2] > remaining || len[4] > remaining - len[2]) return GRAFT_E_CORRUPT;
         if (graft_status st = stream(len[0], len[1], ctrl_); st != GRAFT_OK) return st;
         if (graft_status st = stream(len[2], len[3], diff_); st != GRAFT_OK) return st;
@@ -269,8 +292,11 @@ private:
     size_t stamp_ = 0;
     std::unique_ptr<ZSTD_DCtx, DCtxDeleter> dctx_;
     std::vector<uint8_t> ctrl_, diff_, extra_, cbuf_, scratch_, overlay_;
-    uint64_t oldpos_ = 0, produced_ = 0;
+    uint64_t oldpos_ = 0, produced_ = 0, delta_out_ = 0;
     blake3_hasher target_hash_;
+    uint8_t filter_;
+    FilterDecoder unfilter_;
+    std::vector<uint8_t> ready_;
 };
 
 graft_status apply_impl(const graft_source &src, const graft_reader &patch, const graft_sink &out,
@@ -278,7 +304,8 @@ graft_status apply_impl(const graft_source &src, const graft_reader &patch, cons
     PatchIn in(&patch);
     Header h;
     std::vector<Mask> masks;
-    if (graft_status st = read_preamble(in, h, masks); st != GRAFT_OK) return st;
+    uint8_t filter;
+    if (graft_status st = read_preamble(in, h, masks, filter); st != GRAFT_OK) return st;
     if (h.max_stream > lim.max_stream || h.target_size > lim.max_target_size) return GRAFT_E_LIMIT;
     uint64_t old_total = 0, new_total = 0;  // each <= source/target size: no overflow
     for (const Mask &k : masks) {
@@ -306,7 +333,17 @@ graft_status apply_impl(const graft_source &src, const graft_reader &patch, cons
     if (graft_status st = hash_source(use, sh); st != GRAFT_OK) return st;
     if (!hashes_equal(sh, h.source_hash)) return GRAFT_E_WRONG_SOURCE;
 
-    Decoder d(use, in, out, h, stamps);
+    if (!filter) {
+        Decoder d(use, in, out, h, stamps, 0);
+        return d.run();
+    }
+    // A filter is sequential, so the delta reads a filtered copy of the
+    // (normalized) source held in memory.
+    std::vector<uint8_t> fsrc(static_cast<size_t>(use.size));
+    if (graft_status st = use.read_at(use.ctx, 0, fsrc.data(), fsrc.size()); st != GRAFT_OK) return st;
+    filter_encode(filter, fsrc.data(), fsrc.size());
+    const graft_source mem = graft_source_from_memory(fsrc.data(), fsrc.size());
+    Decoder d(mem, in, out, h, stamps, filter);
     return d.run();
 }
 
@@ -350,7 +387,8 @@ extern "C" graft_status graft_patch_check_source(const graft_reader *patch, cons
         graft::PatchIn in(patch);
         graft::Header h;
         std::vector<graft::Mask> masks;
-        if (graft_status st = graft::read_preamble(in, h, masks); st != GRAFT_OK) return st;
+        uint8_t filter;
+        if (graft_status st = graft::read_preamble(in, h, masks, filter); st != GRAFT_OK) return st;
         if (source->size != h.source_size) return GRAFT_E_WRONG_SOURCE;
         graft::NormalizedSource norm{source, &masks};
         const graft_source nsrc{&norm, source->size, &graft::NormalizedSource::read_at};
@@ -366,8 +404,10 @@ extern "C" graft_status graft_patch_read_info(const graft_reader *patch, graft_p
         graft::PatchIn in(patch);
         graft::Header h;
         std::vector<graft::Mask> masks;
-        if (graft_status st = graft::read_preamble(in, h, masks); st != GRAFT_OK) return st;
+        uint8_t filter;
+        if (graft_status st = graft::read_preamble(in, h, masks, filter); st != GRAFT_OK) return st;
         info->mask_count = static_cast<uint32_t>(masks.size());
+        info->filter = filter;
         info->format_version = h.version;
         info->flags = h.flags;
         info->max_stream = h.max_stream;
