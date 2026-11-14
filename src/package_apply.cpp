@@ -6,6 +6,7 @@
 // commit (journaled renames; failure rolls back) -> clean up.
 
 #include "package_internal.h"
+#include "tree.h"
 
 #include <zstd.h>
 
@@ -23,18 +24,6 @@ namespace graft::pkg {
 FaultHook g_fault_hook = nullptr;
 
 namespace {
-
-class Log {
-public:
-    Log(graft_log_fn fn, void *ctx) : fn_(fn), ctx_(ctx) {}
-    void operator()(int level, const std::string &msg) const {
-        if (fn_) fn_(ctx_, level, msg.c_str());
-    }
-
-private:
-    graft_log_fn fn_;
-    void *ctx_;
-};
 
 std::string join_labels(const Manifest &m, const std::vector<uint64_t> &idx) {
     std::string s;
@@ -758,5 +747,5 @@ extern "C" graft_status graft_update(const char *package_path, const char *root_
 extern "C" graft_status graft_package_describe(const char *package_path, graft_log_fn log, void *log_ctx) {
     if (!package_path) return GRAFT_E_INVALID_ARG;
     return graft::pkg::guarded(
-        [&] { return graft::pkg::describe_impl(package_path, graft::pkg::Log(log, log_ctx)); });
+        [&] { return graft::pkg::describe_impl(package_path, graft::Log(log, log_ctx)); });
 }

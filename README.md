@@ -9,7 +9,7 @@ versions, whole trees), and JAR32-style multi-version archives.
 - `graft archive`: a versioned archive that can extract any version and
   generate a patch from any set of versions
 
-Status: **M3**. Single files (with masked regions) and whole directory trees work, in the `.gft` v1 format
+Status: **M4**. Single files (with masked regions), whole directory trees, and versioned archives work, in the `.gft` v1 format
 ([docs/FORMAT.md](docs/FORMAT.md)). See [docs/SCOPE.md](docs/SCOPE.md) for the plan.
 
 ```sh
@@ -36,6 +36,19 @@ graft pack --label 3.0 --mask "bin/*.exe=marker=SERIAL:,len=19" \
 graft list update.gfp
 graft update --dry-run update.gfp /opt/app      # show the plan; change nothing
 graft update update.gfp /opt/app                # conflicts stop it before any change
+```
+
+Versioned archives keep every release in one append-only file and can
+produce a package from any of them ([docs/ARCHIVE.md](docs/ARCHIVE.md)):
+
+```sh
+graft archive add releases.gfa release-1.0/ 1.0   # creates the archive
+graft archive add releases.gfa release-2.0/ 2.0
+graft archive list releases.gfa
+graft archive diff releases.gfa 1.0 2.0
+graft archive extract releases.gfa 1.0 /tmp/old
+graft archive mkpatch -o update.gfp releases.gfa 2.0   # from every other version
+graft archive drop releases.gfa 1.0
 ```
 
 ## Building

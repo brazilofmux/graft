@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -49,6 +51,16 @@ void usage(std::FILE *out) {
         "  update [--dry-run] PACKAGE DIR\n"
         "                   update the tree at DIR in place (all or nothing)\n"
         "  list PACKAGE     show a package's versions and contents\n"
+        "\n"
+        "  archive add [-l LEVEL] ARCHIVE DIR LABEL   add DIR as a new version\n"
+        "                                             (creates ARCHIVE if needed)\n"
+        "  archive list ARCHIVE\n"
+        "  archive extract ARCHIVE LABEL DIR          DIR must not exist\n"
+        "  archive diff ARCHIVE FROM TO\n"
+        "  archive mkpatch [pack options] -o PACKAGE ARCHIVE TO [FROM...]\n"
+        "                                             package from FROM versions\n"
+        "                                             (default: all others) to TO\n"
+        "  archive drop [-l LEVEL] ARCHIVE LABEL...   remove versions (rewrites)\n"
         "  hash FILE...     print the BLAKE3-256 of each FILE ('-' = stdin)\n"
         "  version          print graft and dependency versions\n"
         "  help             show this message\n",
@@ -420,6 +432,143 @@ int cmd_update(int argc, char **argv) {
     return kExitOk;
 }
 
+// --- archives ------------------------------------------------------------------
+
+struct ArchiveCloser {
+    void operator()(graft_archive *a) const { graft_archive_close(a); }
+};
+using ArchivePtr = std::unique_ptr<graft_archive, ArchiveCloser>;
+
+int open_archive(const char *path, uint32_t flags, ArchivePtr &out) {
+    graft_archive *a = nullptr;
+    if (graft_status st = graft_archive_open(path, flags, log_to_stderr, nullptr, &a); st != GRAFT_OK)
+        return fail(path, st);
+    out.reset(a);
+    return kExitOk;
+}
+
+int cmd_archive(int argc, char **argv) {
+    if (argc < 1) {
+        usage(stderr);
+        return kExitUsage;
+    }
+    const std::string_view sub = argv[0];
+    int level = GRAFT_DEFAULT_LEVEL;
+    std::vector<const char *> pos;
+    const char *out = nullptr;
+    graft_pack_options popts;
+    graft_pack_options_init(&popts);
+    MaskRules rules;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view a = argv[i];
+        unsigned long v;
+        if ((a == "-l" || a == "--level") && i + 1 < argc && parse_uint(argv[i + 1], v)) {
+            level = static_cast<int>(v);
+            ++i;
+        } else if (sub == "mkpatch" && a == "-o" && i + 1 < argc) {
+            out = argv[++i];
+        } else if (sub == "mkpatch" && a == "--mask" && i + 1 < argc) {
+            if (!add_rule(rules, argv[++i])) {
+                std::fprintf(stderr, "graft archive mkpatch: --mask wants GLOB=SPEC\n");
+                return kExitUsage;
+            }
+        } else if (a.size() > 1 && a[0] == '-') {
+            std::fprintf(stderr, "graft archive %s: bad option '%s'\n", argv[0], argv[i]);
+            return kExitUsage;
+        } else {
+            pos.push_back(argv[i]);
+        }
+    }
+    auto bad_args = [&]() {
+        std::fprintf(stderr, "graft archive %s: wrong arguments\n", argv[0]);
+        usage(stderr);
+        return kExitUsage;
+    };
+    ArchivePtr ar;
+
+    if (sub == "add") {
+        if (pos.size() != 3) return bad_args();
+        if (int rc = open_archive(pos[0], GRAFT_ARCHIVE_CREATE, ar); rc != kExitOk) return rc;
+        if (graft_status st = graft_archive_add(ar.get(), pos[1], pos[2], level); st != GRAFT_OK)
+            return fail("archive add", st);
+        return kExitOk;
+    }
+    if (sub == "list") {
+        if (pos.size() != 1) return bad_args();
+        if (int rc = open_archive(pos[0], 0, ar); rc != kExitOk) return rc;
+        uint64_t content = 0;
+        for (size_t i = 0; i < graft_archive_count(ar.get()); ++i) {
+            graft_archive_version v;
+            graft_archive_get(ar.get(), i, &v);
+            char when[32] = "?";
+            const std::time_t t = static_cast<std::time_t>(v.time);
+            if (const std::tm *tm = std::gmtime(&t)) std::strftime(when, sizeof when, "%Y-%m-%d %H:%M UTC", tm);
+            std::printf("%-20s %s  %8llu files  %12llu bytes\n", v.label, when,
+                        static_cast<unsigned long long>(v.file_count), static_cast<unsigned long long>(v.total_size));
+            content += v.total_size;
+        }
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(pos[0], ec);
+        std::printf("%zu versions, %llu bytes of content in a %llu-byte archive\n", graft_archive_count(ar.get()),
+                    static_cast<unsigned long long>(content), static_cast<unsigned long long>(size));
+        return kExitOk;
+    }
+    if (sub == "extract") {
+        if (pos.size() != 3) return bad_args();
+        if (int rc = open_archive(pos[0], 0, ar); rc != kExitOk) return rc;
+        if (graft_status st = graft_archive_extract(ar.get(), pos[1], pos[2]); st != GRAFT_OK)
+            return fail("archive extract", st);
+        return kExitOk;
+    }
+    if (sub == "diff") {
+        if (pos.size() != 3) return bad_args();
+        if (int rc = open_archive(pos[0], 0, ar); rc != kExitOk) return rc;
+        if (graft_status st = graft_archive_diff(ar.get(), pos[1], pos[2]); st != GRAFT_OK)
+            return fail("archive diff", st);
+        return kExitOk;
+    }
+    if (sub == "mkpatch") {
+        if (!out || pos.size() < 2) return bad_args();
+        if (int rc = open_archive(pos[0], 0, ar); rc != kExitOk) return rc;
+        popts.level = level;
+        popts.log = log_to_stderr;
+        if (!rules.rules.empty()) {
+            popts.masks_for = masks_for;
+            popts.masks_ctx = &rules;
+        }
+        if (graft_status st = graft_archive_mkpatch(ar.get(), pos[1], pos.data() + 2, pos.size() - 2, out, &popts);
+            st != GRAFT_OK)
+            return fail("archive mkpatch", st);
+        return kExitOk;
+    }
+    if (sub == "drop") {
+        if (pos.size() < 2) return bad_args();
+        if (int rc = open_archive(pos[0], 0, ar); rc != kExitOk) return rc;
+        std::vector<std::string> keep;
+        size_t dropped = 0;
+        for (size_t i = 0; i < graft_archive_count(ar.get()); ++i) {
+            graft_archive_version v;
+            graft_archive_get(ar.get(), i, &v);
+            bool drop = false;
+            for (size_t k = 1; k < pos.size(); ++k) drop |= std::strcmp(pos[k], v.label) == 0;
+            if (drop) ++dropped;
+            else keep.emplace_back(v.label);
+        }
+        if (dropped != pos.size() - 1) {
+            std::fputs("graft archive drop: no such version (or a label given twice)\n", stderr);
+            return kExitFail;
+        }
+        ar.reset();
+        std::vector<const char *> kp;
+        for (const auto &k : keep) kp.push_back(k.c_str());
+        if (graft_status st = graft_archive_prune(pos[0], kp.data(), kp.size(), level, log_to_stderr, nullptr);
+            st != GRAFT_OK)
+            return fail("archive drop", st);
+        return kExitOk;
+    }
+    return bad_args();
+}
+
 int cmd_info(const char *path) {
     std::FILE *f = std::fopen(path, "rb");
     if (!f) return fail_errno(path);
@@ -489,6 +638,7 @@ int main(int argc, char **argv) {
     if (cmd == "verify" && nargs == 2) return run_apply(args[0], args[1], nullptr);
     if (cmd == "info" && nargs == 1) return cmd_info(args[0]);
     if (cmd == "pack") return cmd_pack(nargs, args);
+    if (cmd == "archive") return cmd_archive(nargs, args);
     if (cmd == "update") return cmd_update(nargs, args);
     if (cmd == "list" && nargs == 1) {
         if (graft_status st = graft_package_describe(args[0], log_to_stderr, nullptr); st != GRAFT_OK)

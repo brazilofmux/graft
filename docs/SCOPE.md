@@ -59,12 +59,15 @@ multi-version archive of JAR32.
   resume after interruption, and path-traversal and symlink-attack hardening.
 
 ### 3. `graft archive`: versioned archive (JAR32-class)
-- A `.gfa` archive holds many versions of a file set: the newest version is
-  stored in full, older ones as reverse deltas (RCS style), with periodic
-  keyframes to bound extraction cost.
-- Operations: `add` a version, `list`, `extract -v N`, `diff N M`, `prune`.
-- **Bridge to (2):** `graft archive mkpatch --from 3,4,5 --to 6` turns an
-  archive into a multi-source patch package.
+- A `.gfa` archive holds many versions of a file set. *Changed 2026-11-13:*
+  forward deltas with chains capped at 8 (a full copy restarts the chain),
+  rather than RCS-style reverse deltas, so the archive is append-only. Adding
+  a version never rewrites what's there, an interrupted add can't damage
+  earlier versions, and extraction cost stays bounded. Identical contents
+  are stored once.
+- Operations: `add` a version, `list`, `extract`, `diff`, `drop` (rewrites).
+- **Bridge to (2):** `graft archive mkpatch -o up.gfp archive.gfa 6 3 4 5`
+  turns an archive into a multi-source package.
 
 ## Test corpus and platforms (from the sibling projects)
 - **A real multi-version corpus:** DOS and CP/M software that shipped
@@ -112,7 +115,7 @@ multi-version archive of JAR32.
 | **M1** | `libgraft` single blob: suffix-array encoder, streaming decoder, `.gft` v1, `graft diff` / `graft apply`, first benchmarks |
 | **M2** | Masked regions on single files |
 | **M3** | Directory trees and multi-source packages, transactional apply. Done 2026-11-13: one delta per distinct old content, shared across versions; renames by content or file name; POSIX file replacement behind std::filesystem, Windows specifics (locked files, ACLs) deferred |
-| **M4** | Versioned archive, plus `mkpatch` from an archive |
+| **M4** | Versioned archive, plus `mkpatch` from an archive. Done 2026-11-13 |
 | **M5** | Executable filters (x86, Z80, SLOW-32), rolling-hash encoder for very large files, SLOW-32 applier build |
 | **Later** | VCDIFF import/export (xdelta3 interop), self-applying patches, 16-bit DOS applier |
 

@@ -237,6 +237,49 @@ GRAFT_API graft_status graft_update(const char *package_path, const char *root_d
 /* Logs a package's versions and contents, one line per entry. */
 GRAFT_API graft_status graft_package_describe(const char *package_path, graft_log_fn log, void *log_ctx);
 
+/* ---- Versioned archives (.gfa, see docs/ARCHIVE.md) -------------------- */
+
+typedef struct graft_archive graft_archive;
+
+enum { GRAFT_ARCHIVE_WRITE = 1, GRAFT_ARCHIVE_CREATE = 2 };
+
+typedef struct graft_archive_version {
+    const char *label;    /* valid until the archive is closed or added to */
+    uint64_t    time;     /* seconds since 1970, when it was added */
+    uint64_t    file_count;
+    uint64_t    total_size;  /* bytes of file content */
+} graft_archive_version;
+
+/* Opens an archive. GRAFT_ARCHIVE_CREATE makes an empty one if needed (and
+ * implies WRITE). A tail left by an interrupted add is ignored, and trimmed
+ * by the next add. Not safe for concurrent writers. */
+GRAFT_API graft_status graft_archive_open(const char *path, uint32_t flags, graft_log_fn log, void *log_ctx,
+                                          graft_archive **out);
+GRAFT_API void         graft_archive_close(graft_archive *a);
+
+GRAFT_API size_t       graft_archive_count(const graft_archive *a);
+GRAFT_API graft_status graft_archive_get(const graft_archive *a, size_t index, graft_archive_version *out);
+
+/* Appends the tree at `dir` as a new version. Labels are unique. */
+GRAFT_API graft_status graft_archive_add(graft_archive *a, const char *dir, const char *label, int level);
+
+/* Writes a version to `dir`, which must not exist yet. */
+GRAFT_API graft_status graft_archive_extract(graft_archive *a, const char *label, const char *dir);
+
+/* Logs the differences between two versions: + added, - removed,
+ * M modified, m mode changed, T kind changed. */
+GRAFT_API graft_status graft_archive_diff(graft_archive *a, const char *from, const char *to);
+
+/* Writes a package (graft_pack) updating any of the `from` versions to `to`.
+ * from_count 0 means every other version. `opts` may be NULL. */
+GRAFT_API graft_status graft_archive_mkpatch(graft_archive *a, const char *to, const char *const *from,
+                                             size_t from_count, const char *out_path,
+                                             const graft_pack_options *opts);
+
+/* Rewrites the archive keeping only the listed versions. */
+GRAFT_API graft_status graft_archive_prune(const char *path, const char *const *keep, size_t keep_count,
+                                           int level, graft_log_fn log, void *log_ctx);
+
 #ifdef __cplusplus
 }
 #endif

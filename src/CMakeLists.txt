@@ -8,8 +8,10 @@ add_library(graft
   encode.cpp
   decode.cpp
   fsutil.cpp
+  tree.cpp
   package_build.cpp
-  package_apply.cpp)
+  package_apply.cpp
+  archive.cpp)
 add_library(graft::graft ALIAS graft)
 
 target_include_directories(graft

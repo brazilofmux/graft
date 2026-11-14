@@ -1,4 +1,4 @@
-add_executable(graft_tests test_main.cpp test_hash.cpp test_status.cpp test_codec.cpp test_masks.cpp test_package.cpp)
+add_executable(graft_tests test_main.cpp test_hash.cpp test_status.cpp test_codec.cpp test_masks.cpp test_package.cpp test_archive.cpp)
 target_link_libraries(graft_tests PRIVATE graft::graft graft::zstd)
 # Package tests use internal headers (test hooks, the manifest encoder).
 target_include_directories(graft_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/src)
@@ -29,6 +29,10 @@ if(GRAFT_TOOLS)
   add_test(NAME cli.package COMMAND ${CMAKE_COMMAND}
     -DGRAFT=$<TARGET_FILE:graft_cli> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli_package
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cli_package.cmake)
+
+  add_test(NAME cli.archive COMMAND ${CMAKE_COMMAND}
+    -DGRAFT=$<TARGET_FILE:graft_cli> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli_archive
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cli_archive.cmake)
 
   add_test(NAME cli.unknown COMMAND graft_cli frobnicate)
   set_tests_properties(cli.unknown PROPERTIES WILL_FAIL TRUE)
