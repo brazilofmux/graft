@@ -24,6 +24,14 @@ absolute calls, jumps and data addresses of 8080/Z80 code: on CP/M 2.2's
 BDOS with a 3-byte fix inserted, the patch is a third smaller than bsdiff's.
 Packages take `--filter "GLOB=z80"`.
 
+Very large files: `-m rolling` (automatic above 512 MiB of source) trades
+a little ratio for far less time and memory: 2 GiB in 7 seconds and 4.4 GB
+instead of 64 seconds and 19 GB.
+
+The applier also builds for [SLOW-32](https://github.com/brazilofmux/slow32-public)
+(`tools/slow32/build.sh`), so untrusted patches can be applied inside its
+sandbox.
+
 Masked regions keep each install's own bytes (serial numbers, keys). They
 are located when the patch is built, in both versions:
 

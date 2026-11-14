@@ -40,6 +40,7 @@ void usage(std::FILE *out) {
         "                     marker=TEXT|hex:HEX,len=N[,skip=K]\n"
         "                     [,newlen=N,pad=BYTE|truncate]\n"
         "                   FILTER: auto (default), none, x86, x86-16, z80, arm64, slow32\n"
+        "                   -m METHOD: auto (default), suffix (smallest), rolling (big files)\n"
         "  apply OLD PATCH NEW\n"
         "                   apply PATCH to OLD, writing NEW\n"
         "  verify OLD PATCH check that PATCH applies cleanly to OLD\n"
@@ -217,6 +218,15 @@ int cmd_diff(int argc, char **argv) {
         } else if ((a == "-b" || a == "--block-size") && i + 1 < argc && parse_uint(argv[i + 1], v)) {
             opts.block_size = static_cast<uint32_t>(v);
             ++i;
+        } else if ((a == "-m" || a == "--method") && i + 1 < argc) {
+            const std::string_view m = argv[++i];
+            if (m == "auto") opts.method = GRAFT_METHOD_AUTO;
+            else if (m == "suffix") opts.method = GRAFT_METHOD_SUFFIX;
+            else if (m == "rolling") opts.method = GRAFT_METHOD_ROLLING;
+            else {
+                std::fprintf(stderr, "graft diff: unknown method '%s'\n", argv[i]);
+                return kExitUsage;
+            }
         } else if ((a == "-f" || a == "--filter") && i + 1 < argc) {
             if (!parse_filter(argv[++i], opts.filter)) {
                 std::fprintf(stderr, "graft diff: unknown filter '%s'\n", argv[i]);

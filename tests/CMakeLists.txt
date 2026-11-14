@@ -35,5 +35,10 @@ if(GRAFT_TOOLS)
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cli_archive.cmake)
 
   add_test(NAME cli.unknown COMMAND graft_cli frobnicate)
+
+  if(GRAFT_SLOW32_TEST)
+    add_test(NAME slow32.apply COMMAND ${PROJECT_SOURCE_DIR}/tools/slow32/test.sh
+             $<TARGET_FILE:graft_cli> ${CMAKE_CURRENT_BINARY_DIR}/slow32)
+  endif()
   set_tests_properties(cli.unknown PROPERTIES WILL_FAIL TRUE)
 endif()

@@ -117,7 +117,7 @@ multi-version archive of JAR32.
 | **M3** | Directory trees and multi-source packages, transactional apply. Done 2026-11-13: one delta per distinct old content, shared across versions; renames by content or file name; POSIX file replacement behind std::filesystem, Windows specifics (locked files, ACLs) deferred |
 | **M4** | Versioned archive, plus `mkpatch` from an archive. Done 2026-11-13 |
 | **M5a** | Executable filters. Done 2026-11-13. Finding: for a bsdiff-class encoder, relativize *absolute* references and leave relative ones alone. Z80 (boundary-walking, CALL/JP plus data addresses) cut CP/M patches by a third against bsdiff. BCJ-style rel→abs filters (x86, ARM64) made real builds 12–36% worse, so they're explicit-only. Next for executables: an x86-16 filter that relativizes absolute data references and far calls (needs an instruction-length decoder and DOS version pairs), and Courgette-style label alignment for modern PIC code |
-| **M5** | Rolling-hash encoder for very large files; SLOW-32 applier build |
+| **M5** | Done 2026-11-13. Rolling-hash encoder (`-m rolling`; AUTO above 512 MiB of source): on 2 GiB inputs, 6.8 s and 4.4 GB against the suffix array's 64 s and 18.8 GB, at the same patch size on scattered edits; 1-11% larger on executables. The encoder now writes blocks one at a time. SLOW-32 applier: `tools/slow32/build.sh` builds graft-apply from the decoder, zstd's decompressor and portable BLAKE3 with the existing SLOW-32 toolchain (read-only); `tools/slow32/test.sh` and `-DGRAFT_SLOW32_TEST=ON` check it against host-made patches |
 | **Later** | VCDIFF import/export (xdelta3 interop), self-applying patches, 16-bit DOS applier |
 
 ## Open questions

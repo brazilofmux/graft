@@ -150,6 +150,13 @@ enum {
 /* The filter graft_diff's GRAFT_FILTER_AUTO would try for this file. */
 GRAFT_API uint8_t graft_filter_detect(const void *data, size_t len);
 
+/* Matching. SUFFIX (bsdiff-class) finds approximate matches anywhere and
+ * gives the smallest patches, but needs 4-8 bytes of memory per source
+ * byte. ROLLING (xdelta-class) indexes the source sparsely: much less
+ * memory and time on huge files, larger patches. AUTO uses SUFFIX for
+ * sources up to 512 MiB. */
+enum { GRAFT_METHOD_AUTO = 0, GRAFT_METHOD_SUFFIX = 1, GRAFT_METHOD_ROLLING = 2 };
+
 typedef struct graft_diff_options {
     uint32_t struct_size;  /* sizeof(graft_diff_options); set by _init */
     int      level;        /* zstd level 1..22                          */
@@ -157,6 +164,7 @@ typedef struct graft_diff_options {
     const graft_mask *masks;  /* any order; regions must not overlap    */
     size_t   mask_count;      /* 0..4096                                 */
     uint8_t  filter;          /* GRAFT_FILTER_*; default AUTO            */
+    uint8_t  method;          /* GRAFT_METHOD_*; default AUTO            */
 } graft_diff_options;
 
 GRAFT_API void graft_diff_options_init(graft_diff_options *opts);

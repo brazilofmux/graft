@@ -25,6 +25,7 @@ option(GRAFT_SANITIZE "Build with ASan + UBSan" OFF)
 option(GRAFT_FUZZ     "Build libFuzzer targets (needs a clang with libFuzzer)" OFF)
 option(GRAFT_TESTS    "Build tests" ON)
 option(GRAFT_TOOLS    "Build the graft CLI" ON)
+option(GRAFT_SLOW32_TEST "Add a test that builds graft-apply for SLOW-32 and runs it (needs the SLOW-32 toolchain; see tools/slow32/build.sh)" OFF)
 
 include(cmake/Warnings.cmake)
 include(cmake/Deps.cmake)

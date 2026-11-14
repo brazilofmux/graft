@@ -20,6 +20,9 @@
 namespace graft {
 namespace {
 
+// AUTO uses the suffix array (4-8 bytes per source byte) up to this size.
+constexpr size_t kSuffixLimit = size_t{512} << 20;
+
 struct Control {
     uint64_t add;
     uint64_t copy;
@@ -80,6 +83,55 @@ int64_t search(const Idx *sa, const uint8_t *old, int64_t oldsize, const uint8_t
     return lhi;
 }
 
+// bsdiff's step between two matches: extend the previous match (at
+// lastscan/lastpos) forward and the next one (at scan/pos) backward, both
+// approximately (more than half the bytes agree), split any overlap at the
+// best point, and emit the control. scan == newsize finishes.
+void emit_between(const uint8_t *old, int64_t oldsize, const uint8_t *nw, int64_t newsize, int64_t &lastscan,
+                  int64_t &lastpos, int64_t scan, int64_t pos, std::vector<Control> &out,
+                  int64_t max_back = INT64_MAX) {
+    int64_t s = 0, sf = 0, lenf = 0;
+    for (int64_t i = 0; lastscan + i < scan && lastpos + i < oldsize;) {
+        if (old[lastpos + i] == nw[lastscan + i]) ++s;
+        ++i;
+        if (s * 2 - i > sf * 2 - lenf) {
+            sf = s;
+            lenf = i;
+        }
+    }
+    int64_t lenb = 0;
+    if (scan < newsize) {
+        int64_t sb = 0;
+        s = 0;
+        for (int64_t i = 1; scan >= lastscan + i && pos >= i && i <= max_back; ++i) {
+            if (old[pos - i] == nw[scan - i]) ++s;
+            if (s * 2 - i > sb * 2 - lenb) {
+                sb = s;
+                lenb = i;
+            }
+        }
+    }
+    if (lastscan + lenf > scan - lenb) {
+        const int64_t overlap = (lastscan + lenf) - (scan - lenb);
+        int64_t ss = 0, lens = 0;
+        s = 0;
+        for (int64_t i = 0; i < overlap; ++i) {
+            if (nw[lastscan + lenf - overlap + i] == old[lastpos + lenf - overlap + i]) ++s;
+            if (nw[scan - lenb + i] == old[pos - lenb + i]) --s;
+            if (s > ss) {
+                ss = s;
+                lens = i + 1;
+            }
+        }
+        lenf += lens - overlap;
+        lenb -= lens;
+    }
+    out.push_back({static_cast<uint64_t>(lenf), static_cast<uint64_t>((scan - lenb) - (lastscan + lenf)),
+                   (pos - lenb) - (lastpos + lenf)});
+    lastscan = scan - lenb;
+    lastpos = pos - lenb;
+}
+
 template <class Idx>
 void bsdiff_controls(const Idx *sa, const uint8_t *old, int64_t oldsize, const uint8_t *nw, int64_t newsize,
                      std::vector<Control> &out) {
@@ -98,58 +150,91 @@ void bsdiff_controls(const Idx *sa, const uint8_t *old, int64_t oldsize, const u
         }
 
         if (len != oldscore || scan == newsize) {
-            // Extend the previous match forward...
-            int64_t s = 0, sf = 0, lenf = 0;
-            for (int64_t i = 0; lastscan + i < scan && lastpos + i < oldsize;) {
-                if (old[lastpos + i] == nw[lastscan + i]) ++s;
-                ++i;
-                if (s * 2 - i > sf * 2 - lenf) {
-                    sf = s;
-                    lenf = i;
-                }
-            }
-            // ...and the new one backward.
-            int64_t lenb = 0;
-            if (scan < newsize) {
-                int64_t sb = 0;
-                s = 0;
-                for (int64_t i = 1; scan >= lastscan + i && pos >= i; ++i) {
-                    if (old[pos - i] == nw[scan - i]) ++s;
-                    if (s * 2 - i > sb * 2 - lenb) {
-                        sb = s;
-                        lenb = i;
-                    }
-                }
-            }
-            // If they overlap, split at the best point.
-            if (lastscan + lenf > scan - lenb) {
-                const int64_t overlap = (lastscan + lenf) - (scan - lenb);
-                int64_t ss = 0, lens = 0;
-                s = 0;
-                for (int64_t i = 0; i < overlap; ++i) {
-                    if (nw[lastscan + lenf - overlap + i] == old[lastpos + lenf - overlap + i]) ++s;
-                    if (nw[scan - lenb + i] == old[pos - lenb + i]) --s;
-                    if (s > ss) {
-                        ss = s;
-                        lens = i + 1;
-                    }
-                }
-                lenf += lens - overlap;
-                lenb -= lens;
-            }
-
-            out.push_back({static_cast<uint64_t>(lenf),
-                           static_cast<uint64_t>((scan - lenb) - (lastscan + lenf)),
-                           (pos - lenb) - (lastpos + lenf)});
-
-            lastscan = scan - lenb;
-            lastpos = pos - lenb;
+            emit_between(old, oldsize, nw, newsize, lastscan, lastpos, scan, pos, out);
             lastoffset = pos - scan;
         }
     }
 }
 
-graft_status make_controls(const uint8_t *old, size_t oldsize, const uint8_t *nw, size_t newsize,
+// xdelta-class matching for sources too big for a suffix array: index the
+// source by hashes of 32-byte blocks every `stride` bytes (the stride grows
+// to keep the table within budget), roll the same hash over the target, and
+// take exact matches (preferring to continue at the current alignment).
+// Gaps between matches get bsdiff's approximate extension, so mostly-equal
+// regions still become cheap diff runs.
+void rolling_controls(const uint8_t *old, int64_t on, const uint8_t *nw, int64_t nn, std::vector<Control> &out) {
+    constexpr int64_t B = 32;
+    constexpr uint64_t M = 0x100000001b3ull;
+    constexpr size_t kMaxTable = size_t{1} << 25;  // 256 MiB of offsets
+    constexpr int64_t kMaxBack = 1 << 16;          // bounds each gap fill's backward scan
+    int64_t lastscan = 0, lastpos = 0;
+    if (on >= B && nn >= B) {
+        uint64_t mb = 1;  // M^(B-1)
+        for (int64_t k = 1; k < B; ++k) mb *= M;
+        auto hash = [&](const uint8_t *p) {
+            uint64_t h = 0;
+            for (int64_t k = 0; k < B; ++k) h = h * M + p[k];
+            return h;
+        };
+        const int64_t blocks_wanted = on / B;
+        size_t bits = 10;
+        while ((size_t{1} << bits) < static_cast<size_t>(blocks_wanted) * 2 && (size_t{1} << bits) < kMaxTable) ++bits;
+        const size_t tsize = size_t{1} << bits;
+        const int64_t stride = std::max<int64_t>(B, (on + static_cast<int64_t>(tsize / 2) - 1) / static_cast<int64_t>(tsize / 2));
+        auto slot = [&](uint64_t h) { return static_cast<size_t>((h * 0x9e3779b97f4a7c15ull) >> (64 - bits)); };
+        std::vector<int64_t> table(tsize, -1);
+        for (int64_t p = 0; p + B <= on; p += stride) {
+            int64_t &t = table[slot(hash(old + p))];
+            if (t < 0) t = p;
+        }
+
+        int64_t i = 0, off = 0, last_end = 0;
+        uint64_t h = hash(nw);
+        while (i + B <= nn) {
+            int64_t best = 0, bpos = 0;
+            const int64_t p = i + off;  // continue at the current alignment
+            if (p >= 0 && p + B <= on && std::memcmp(old + p, nw + i, B) == 0) {
+                best = matchlen(old + p, on - p, nw + i, nn - i);
+                bpos = p;
+            }
+            if (best < 4096) {  // a long continuation wins outright
+                const int64_t c = table[slot(h)];
+                if (c >= 0 && c != p && std::memcmp(old + c, nw + i, B) == 0) {
+                    const int64_t l = matchlen(old + c, on - c, nw + i, nn - i);
+                    if (l > best) {
+                        best = l;
+                        bpos = c;
+                    }
+                }
+            }
+            if (best >= B && bpos - i == off) {
+                // The current alignment again (after an edit): the running
+                // approximate match continues, as in bsdiff. Not a new anchor;
+                // recording one would make each gap fill rescan the whole run.
+                i += best;
+                last_end = i;
+                if (i + B <= nn) h = hash(nw + i);
+            } else if (best >= B) {
+                while (i > last_end && bpos > 0 && old[bpos - 1] == nw[i - 1]) {  // exact backward
+                    --i;
+                    --bpos;
+                    ++best;
+                }
+                emit_between(old, on, nw, nn, lastscan, lastpos, i, bpos, out, kMaxBack);
+                off = bpos - i;
+                i += best;
+                last_end = i;
+                if (i + B <= nn) h = hash(nw + i);
+            } else {
+                if (i + B < nn) h = (h - nw[i] * mb) * M + nw[i + B];
+                ++i;
+            }
+        }
+    }
+    emit_between(old, on, nw, nn, lastscan, lastpos, nn, 0, out);
+}
+
+graft_status make_controls(const uint8_t *old, size_t oldsize, const uint8_t *nw, size_t newsize, uint8_t method,
                            std::vector<Control> &out) {
     if (newsize == 0) return GRAFT_OK;
     if (oldsize == 0) {
@@ -157,6 +242,11 @@ graft_status make_controls(const uint8_t *old, size_t oldsize, const uint8_t *nw
         return GRAFT_OK;
     }
     const auto on = static_cast<int64_t>(oldsize), nn = static_cast<int64_t>(newsize);
+    if (method == GRAFT_METHOD_AUTO) method = oldsize <= kSuffixLimit ? GRAFT_METHOD_SUFFIX : GRAFT_METHOD_ROLLING;
+    if (method == GRAFT_METHOD_ROLLING) {
+        rolling_controls(old, on, nw, nn, out);
+        return GRAFT_OK;
+    }
     if (oldsize <= static_cast<size_t>(INT32_MAX)) {
         std::vector<int32_t> sa(oldsize);
         if (libsais(old, sa.data(), static_cast<int32_t>(oldsize), 0, nullptr) != 0) return GRAFT_E_NOMEM;
@@ -173,36 +263,44 @@ graft_status make_controls(const uint8_t *old, size_t oldsize, const uint8_t *nw
 
 struct RawBlock {
     std::vector<uint8_t> ctrl, diff, extra;
-    bool empty() const { return ctrl.empty(); }
 };
 
-// Splits controls into blocks of at most `limit` output bytes and at most
-// `limit` ctrl bytes, materializing the diff and extra streams.
-void make_blocks(const uint8_t *old, const uint8_t *nw, const std::vector<Control> &controls, uint64_t limit,
-                 std::vector<RawBlock> &blocks) {
-    RawBlock cur;
-    uint64_t room = limit;
-    uint64_t oldpos = 0, newpos = 0;
+// A control, possibly split, placed in a block.
+struct Piece {
+    uint64_t add, copy;
+    int64_t seek;
+    size_t block;
+};
 
+size_t uvarint_len(uint64_t v) {
+    size_t n = 1;
+    while (v >= 0x80) {
+        v >>= 7;
+        ++n;
+    }
+    return n;
+}
+
+// Splits controls into blocks of at most `limit` output bytes and at most
+// `limit` ctrl bytes. Returns the largest stream any block will have.
+size_t plan_blocks(const std::vector<Control> &controls, uint64_t limit, std::vector<Piece> &pieces) {
+    size_t block = 0, ctrl = 0, max_stream = 0;
+    uint64_t room = limit, diff = 0, extra = 0;
     auto flush = [&] {
-        if (!cur.empty()) blocks.push_back(std::move(cur));
-        cur = RawBlock{};
+        max_stream = std::max({max_stream, ctrl, static_cast<size_t>(diff), static_cast<size_t>(extra)});
+        if (ctrl) ++block;
+        ctrl = 0;
+        diff = extra = 0;
         room = limit;
     };
     auto emit = [&](uint64_t add, uint64_t copy, int64_t seek) {
-        if (cur.ctrl.size() + kMaxTriple > limit) flush();
-        put_uvarint(cur.ctrl, add);
-        put_uvarint(cur.ctrl, copy);
-        put_uvarint(cur.ctrl, zigzag(seek));
-        for (uint64_t i = 0; i < add; ++i) cur.diff.push_back(static_cast<uint8_t>(nw[newpos + i] - old[oldpos + i]));
-        oldpos += add;
-        newpos += add;
-        cur.extra.insert(cur.extra.end(), nw + newpos, nw + newpos + copy);
-        newpos += copy;
-        oldpos = static_cast<uint64_t>(static_cast<int64_t>(oldpos) + seek);
+        if (ctrl + kMaxTriple > limit) flush();
+        pieces.push_back({add, copy, seek, block});
+        ctrl += uvarint_len(add) + uvarint_len(copy) + uvarint_len(zigzag(seek));
+        diff += add;
+        extra += copy;
         room -= add + copy;
     };
-
     for (Control c : controls) {
         for (;;) {
             if (room == 0) flush();
@@ -223,6 +321,7 @@ void make_blocks(const uint8_t *old, const uint8_t *nw, const std::vector<Contro
         }
     }
     flush();
+    return max_stream;
 }
 
 class HashingSink {
@@ -279,17 +378,17 @@ graft_status diff_impl(const uint8_t *src, size_t slen, const uint8_t *tgt, size
     }
 
     std::vector<Control> controls;
-    if (graft_status st = make_controls(src, slen, tgt, tlen, controls); st != GRAFT_OK) return st;
+    if (graft_status st = make_controls(src, slen, tgt, tlen, o.method, controls); st != GRAFT_OK) return st;
 
-    std::vector<RawBlock> blocks;
-    make_blocks(src, tgt, controls, o.block_size, blocks);
+    // Pass 1 plans the blocks (the header needs the largest stream); pass 2
+    // builds and writes one block at a time, so the patch is never all in memory.
+    std::vector<Piece> pieces;
+    const size_t max_stream = plan_blocks(controls, o.block_size, pieces);
     controls = {};
 
     h.flags = static_cast<uint16_t>((masks.empty() ? 0 : kFlagMasks) | (filter ? kFlagFilter : 0));
     h.source_size = slen;
     h.target_size = tlen;
-    size_t max_stream = 0;
-    for (const auto &b : blocks) max_stream = std::max({max_stream, b.ctrl.size(), b.diff.size(), b.extra.size()});
     h.max_stream = static_cast<uint32_t>(max_stream);  // <= block_size <= 1 GiB
 
     HashingSink out(sink);
@@ -310,7 +409,25 @@ graft_status diff_impl(const uint8_t *src, size_t slen, const uint8_t *tgt, size
     ZSTD_CCtx_setParameter(cctx.get(), ZSTD_c_checksumFlag, 0);
 
     std::vector<uint8_t> c_ctrl, c_diff, c_extra, bh;
-    for (auto &b : blocks) {
+    RawBlock b;
+    uint64_t oldpos = 0, newpos = 0;
+    for (size_t i = 0; i < pieces.size();) {
+        b.ctrl.clear();
+        b.diff.clear();
+        b.extra.clear();
+        const size_t block = pieces[i].block;
+        for (; i < pieces.size() && pieces[i].block == block; ++i) {
+            const Piece &pc = pieces[i];
+            put_uvarint(b.ctrl, pc.add);
+            put_uvarint(b.ctrl, pc.copy);
+            put_uvarint(b.ctrl, zigzag(pc.seek));
+            for (uint64_t k = 0; k < pc.add; ++k) b.diff.push_back(static_cast<uint8_t>(tgt[newpos + k] - src[oldpos + k]));
+            oldpos += pc.add;
+            newpos += pc.add;
+            b.extra.insert(b.extra.end(), tgt + newpos, tgt + newpos + pc.copy);
+            newpos += pc.copy;
+            oldpos = static_cast<uint64_t>(static_cast<int64_t>(oldpos) + pc.seek);
+        }
         if (graft_status st = compress(cctx.get(), b.ctrl, c_ctrl); st != GRAFT_OK) return st;
         if (graft_status st = compress(cctx.get(), b.diff, c_diff); st != GRAFT_OK) return st;
         if (graft_status st = compress(cctx.get(), b.extra, c_extra); st != GRAFT_OK) return st;
@@ -324,7 +441,6 @@ graft_status diff_impl(const uint8_t *src, size_t slen, const uint8_t *tgt, size
         put_uvarint(bh, c_extra.size());
         for (const auto *v : {&bh, &c_ctrl, &c_diff, &c_extra})
             if (graft_status st = out.write(v->data(), v->size()); st != GRAFT_OK) return st;
-        b = RawBlock{};  // release as we go
     }
 
     const uint8_t end = kTagEnd;
@@ -345,6 +461,7 @@ extern "C" void graft_diff_options_init(graft_diff_options *o) {
     o->masks = nullptr;
     o->mask_count = 0;
     o->filter = GRAFT_FILTER_AUTO;
+    o->method = GRAFT_METHOD_AUTO;
 }
 
 extern "C" uint8_t graft_filter_detect(const void *data, size_t len) {
@@ -365,6 +482,7 @@ extern "C" graft_status graft_diff(const void *source, size_t source_len, const 
     if (o.filter != GRAFT_FILTER_AUTO && o.filter != GRAFT_FILTER_NONE && !graft::filter_known(o.filter))
         return GRAFT_E_INVALID_ARG;
     if (o.level < 1 || o.level > ZSTD_maxCLevel()) return GRAFT_E_INVALID_ARG;
+    if (o.method > GRAFT_METHOD_ROLLING) return GRAFT_E_INVALID_ARG;
     if (o.block_size < GRAFT_MIN_BLOCK_SIZE || o.block_size > GRAFT_MAX_BLOCK_SIZE) return GRAFT_E_INVALID_ARG;
     try {
         std::vector<graft::Mask> masks;

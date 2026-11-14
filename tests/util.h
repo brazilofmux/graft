@@ -42,10 +42,11 @@ struct MemReader {
 };
 
 inline graft_status make_patch(const Bytes &oldb, const Bytes &newb, Bytes &patch, uint32_t block_size = 0,
-                               int level = 3) {
+                               int level = 3, uint8_t method = GRAFT_METHOD_AUTO) {
     graft_diff_options o;
     graft_diff_options_init(&o);
     o.level = level;
+    o.method = method;
     if (block_size) o.block_size = block_size;
     VecSink s;
     graft_sink sink = s.sink();

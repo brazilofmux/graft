@@ -8,11 +8,14 @@ using namespace testutil;
 
 namespace {
 
+// Every round trip runs under both matchers.
 void roundtrip(const Bytes &oldb, const Bytes &newb, uint32_t block_size = 0, size_t chunk = SIZE_MAX) {
-    Bytes patch, out;
-    CHECK_EQ(make_patch(oldb, newb, patch, block_size), GRAFT_OK);
-    CHECK_EQ(apply_patch(oldb, patch, out, chunk), GRAFT_OK);
-    CHECK(out == newb);
+    for (uint8_t method : {uint8_t{GRAFT_METHOD_SUFFIX}, uint8_t{GRAFT_METHOD_ROLLING}}) {
+        Bytes patch, out;
+        CHECK_EQ(make_patch(oldb, newb, patch, block_size, 3, method), GRAFT_OK);
+        CHECK_EQ(apply_patch(oldb, patch, out, chunk), GRAFT_OK);
+        CHECK(out == newb);
+    }
 }
 
 Bytes edited(const Bytes &b, std::mt19937_64 &rng, size_t edits) {
@@ -87,6 +90,31 @@ TEST(codec_repetitive_input_is_not_quadratic) {
     roundtrip(periodic_old, periodic_new);
     const auto secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     CHECK(secs < 20.0);  // generous: sanitizer builds are slow
+}
+
+TEST(codec_rolling_finds_moved_and_repeated_data) {
+    // Rolling matching should still give small patches for typical edits:
+    // a moved block, an insertion, and a tail append.
+    std::mt19937_64 rng(30);
+    const Bytes oldb = random_bytes(rng, 1 << 20);
+    Bytes newb(oldb.begin() + 300000, oldb.begin() + 600000);   // a block moved to the front
+    newb.insert(newb.end(), oldb.begin(), oldb.begin() + 300000);
+    newb.insert(newb.end(), {1, 2, 3, 4, 5});
+    newb.insert(newb.end(), oldb.begin() + 600000, oldb.end());
+    Bytes ps, pr;
+    CHECK_EQ(make_patch(oldb, newb, ps, 0, 3, GRAFT_METHOD_SUFFIX), GRAFT_OK);
+    CHECK_EQ(make_patch(oldb, newb, pr, 0, 3, GRAFT_METHOD_ROLLING), GRAFT_OK);
+    CHECK(pr.size() < 2000);
+    CHECK(pr.size() < 4 * ps.size() + 500);
+    Bytes out;
+    CHECK_EQ(apply_patch(oldb, pr, out), GRAFT_OK);
+    CHECK(out == newb);
+}
+
+TEST(codec_rejects_bad_method) {
+    const Bytes a{1, 2, 3};
+    Bytes patch;
+    CHECK_EQ(make_patch(a, a, patch, 0, 3, 9), GRAFT_E_INVALID_ARG);
 }
 
 TEST(codec_rejects_every_single_byte_corruption) {

@@ -55,7 +55,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     graft_diff_options o;
     graft_diff_options_init(&o);
     o.level = 1;
-    o.block_size = bsel < 128 ? GRAFT_MIN_BLOCK_SIZE + bsel : GRAFT_DEFAULT_BLOCK_SIZE;
+    o.block_size = (bsel & 0x7f) < 64 ? GRAFT_MIN_BLOCK_SIZE + (bsel & 0x3f) : GRAFT_DEFAULT_BLOCK_SIZE;
+    o.method = bsel & 0x80 ? GRAFT_METHOD_ROLLING : GRAFT_METHOD_SUFFIX;
 
     graft_mask mask{size_t{mk[0]} | size_t{mk[1]} << 8, mk[2], size_t{mk[3]} | size_t{mk[4]} << 8, mk[5],
                     static_cast<uint8_t>(mk[6] & 3), static_cast<uint8_t>(mk[6] >> 2)};

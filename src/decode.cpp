@@ -196,7 +196,7 @@ private:
         out.clear();
         if (raw > h_.max_stream) return GRAFT_E_CORRUPT;
         if (raw == 0) return comp == 0 ? GRAFT_OK : GRAFT_E_CORRUPT;
-        if (comp == 0 || comp > ZSTD_compressBound(static_cast<size_t>(raw))) return GRAFT_E_CORRUPT;
+        if (comp == 0 || comp > ZSTD_COMPRESSBOUND(static_cast<size_t>(raw))) return GRAFT_E_CORRUPT;
         cbuf_.resize(static_cast<size_t>(comp));
         if (graft_status st = in_.read(cbuf_.data(), cbuf_.size()); st != GRAFT_OK) return st;
         out.resize(static_cast<size_t>(raw));
