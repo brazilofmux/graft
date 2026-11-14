@@ -121,7 +121,7 @@ multi-version archive of JAR32.
 | **Later** | VCDIFF import/export (xdelta3 interop), self-applying patches, 16-bit DOS applier |
 
 ## Open questions
-1. License (MIT, BSD-2, or Apache-2.0)? It has to be compatible with the vendored deps.
+1. ~~License?~~ MIT (2026-11-13), "The graft authors" as in z80-monster and dos-monster; dependency licenses in THIRD-PARTY.md.
 2. ~~How should masked regions behave when the new version moves or resizes the region?~~ Decided: see Masked regions above.
 3. ~~One delta per source, or chains?~~ One delta per distinct old content, shared by every version with that content; no chains.
 4. ~~How important is Windows?~~ POSIX first; file replacement sits behind std::filesystem so a Windows version can slot in.

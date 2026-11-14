@@ -99,3 +99,8 @@ bench/bench.sh /tmp/corpus                       # xdelta3, bsdiff, zstd, graft
 `bench.sh` reports patch size, encode and decode time, and peak RSS, and
 verifies each round trip. Real version pairs (which can't be redistributed)
 go in `bench/corpus/private/<name>/{old,new}`, which git ignores.
+
+## License
+
+MIT; see [LICENSE](LICENSE). Dependencies and their licenses are listed in
+[THIRD-PARTY.md](THIRD-PARTY.md).
