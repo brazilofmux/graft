@@ -41,6 +41,14 @@ void usage(std::FILE *out) {
         "                   apply PATCH to OLD, writing NEW\n"
         "  verify OLD PATCH check that PATCH applies cleanly to OLD\n"
         "  info PATCH       print a patch's header\n"
+        "\n"
+        "  pack [-l LEVEL] [--label NAME] [--mask GLOB=SPEC]... [--mask-file FILE]\n"
+        "       -o PACKAGE NEW_DIR OLD_DIR[=LABEL]...\n"
+        "                   write a package updating any OLD_DIR tree to NEW_DIR.\n"
+        "                   GLOB: * within a path component, ** across, ? one char\n"
+        "  update [--dry-run] PACKAGE DIR\n"
+        "                   update the tree at DIR in place (all or nothing)\n"
+        "  list PACKAGE     show a package's versions and contents\n"
         "  hash FILE...     print the BLAKE3-256 of each FILE ('-' = stdin)\n"
         "  version          print graft and dependency versions\n"
         "  help             show this message\n",
@@ -252,6 +260,166 @@ int run_apply(const char *old_path, const char *patch_path, const char *new_path
     return kExitOk;
 }
 
+// --- packages ------------------------------------------------------------------
+
+void log_to_stderr(void *, int level, const char *msg) {
+    std::fprintf(level == GRAFT_LOG_INFO ? stdout : stderr, "%s%s\n",
+                 level == GRAFT_LOG_ERROR ? "error: " : level == GRAFT_LOG_WARN ? "warning: " : "", msg);
+}
+
+// '*' matches within a path component, '**' across components, '?' one character.
+bool glob_match(const char *g, const char *s) {
+    for (; *g; ++g) {
+        if (g[0] == '*' && g[1] == '*') {
+            g += 2;
+            if (*g == '/') ++g;  // "**/" also matches zero directories
+            for (const char *t = s;; ++t) {
+                if (glob_match(g, t)) return true;
+                if (!*t) return false;
+            }
+        }
+        if (*g == '*') {
+            for (const char *t = s;; ++t) {
+                if (glob_match(g + 1, t)) return true;
+                if (!*t || *t == '/') return false;
+            }
+        }
+        if (!*s || (*g == '?' ? *s == '/' : *g != *s)) return false;
+        ++s;
+    }
+    return *s == '\0';
+}
+
+struct MaskRules {
+    std::vector<std::pair<std::string, std::string>> rules;  // glob, spec
+    std::string error;
+};
+
+graft_status masks_for(void *ctx, const char *path, const uint8_t *oldp, size_t oldn, const uint8_t *newp, size_t newn,
+                       graft_mask *out, size_t cap, size_t *count) {
+    auto *mr = static_cast<MaskRules *>(ctx);
+    *count = 0;
+    for (const auto &[glob, spec] : mr->rules) {
+        if (!glob_match(glob.c_str(), path)) continue;
+        if (*count == cap) {
+            std::fprintf(stderr, "error: %s: too many masks\n", path);
+            return GRAFT_E_LIMIT;
+        }
+        std::string err;
+        if (!cli::resolve_mask(spec, oldp, oldn, newp, newn, out[*count], err)) {
+            std::fprintf(stderr, "error: %s: mask '%s': %s\n", path, spec.c_str(), err.c_str());
+            return GRAFT_E_INVALID_ARG;
+        }
+        ++*count;
+    }
+    return GRAFT_OK;
+}
+
+bool add_rule(MaskRules &mr, const std::string &item) {
+    const auto eq = item.find('=');
+    if (eq == std::string::npos || eq == 0) return false;
+    mr.rules.emplace_back(item.substr(0, eq), item.substr(eq + 1));
+    return true;
+}
+
+int cmd_pack(int argc, char **argv) {
+    graft_pack_options opts;
+    graft_pack_options_init(&opts);
+    MaskRules rules;
+    const char *out = nullptr, *label = nullptr;
+    std::vector<const char *> pos;
+    for (int i = 0; i < argc; ++i) {
+        const std::string_view a = argv[i];
+        unsigned long v;
+        if ((a == "-l" || a == "--level") && i + 1 < argc && parse_uint(argv[i + 1], v)) {
+            opts.level = static_cast<int>(v);
+            ++i;
+        } else if (a == "-o" && i + 1 < argc) {
+            out = argv[++i];
+        } else if (a == "--label" && i + 1 < argc) {
+            label = argv[++i];
+        } else if (a == "--mask" && i + 1 < argc) {
+            if (!add_rule(rules, argv[++i])) {
+                std::fprintf(stderr, "graft pack: --mask wants GLOB=SPEC, got '%s'\n", argv[i]);
+                return kExitUsage;
+            }
+        } else if (a == "--mask-file" && i + 1 < argc) {
+            std::vector<std::string> lines;
+            std::string err;
+            if (!cli::read_mask_file(argv[++i], lines, err)) {
+                std::fprintf(stderr, "graft pack: %s\n", err.c_str());
+                return kExitFail;
+            }
+            for (const auto &l : lines)
+                if (!add_rule(rules, l)) {
+                    std::fprintf(stderr, "graft pack: %s: lines are GLOB=SPEC, got '%s'\n", argv[i], l.c_str());
+                    return kExitUsage;
+                }
+        } else if (a.size() > 1 && a[0] == '-') {
+            std::fprintf(stderr, "graft pack: bad option '%s'\n", argv[i]);
+            return kExitUsage;
+        } else {
+            pos.push_back(argv[i]);
+        }
+    }
+    if (!out || pos.size() < 2) {
+        std::fputs("usage: graft pack [options] -o PACKAGE NEW_DIR OLD_DIR[=LABEL]...\n", stderr);
+        return kExitUsage;
+    }
+    std::vector<std::string> dirs, labels;
+    for (size_t i = 1; i < pos.size(); ++i) {
+        std::string d = pos[i], l;
+        if (const auto eq = d.rfind('='); eq != std::string::npos) {
+            l = d.substr(eq + 1);
+            d.resize(eq);
+        } else {
+            std::string base = d;
+            while (base.size() > 1 && base.back() == '/') base.pop_back();
+            l = base.substr(base.rfind('/') == std::string::npos ? 0 : base.rfind('/') + 1);
+        }
+        dirs.push_back(d);
+        labels.push_back(l);
+    }
+    std::vector<const char *> dp, lp;
+    for (size_t i = 0; i < dirs.size(); ++i) {
+        dp.push_back(dirs[i].c_str());
+        lp.push_back(labels[i].c_str());
+    }
+    std::string new_label = label ? label : pos[0];
+    if (rules.rules.size()) {
+        opts.masks_for = masks_for;
+        opts.masks_ctx = &rules;
+    }
+    opts.log = log_to_stderr;
+    if (graft_status st = graft_pack(pos[0], new_label.c_str(), dp.data(), lp.data(), dp.size(), out, &opts);
+        st != GRAFT_OK)
+        return fail("pack", st);
+    return kExitOk;
+}
+
+int cmd_update(int argc, char **argv) {
+    graft_update_options opts;
+    graft_update_options_init(&opts);
+    opts.log = log_to_stderr;
+    std::vector<const char *> pos;
+    for (int i = 0; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--dry-run") == 0 || std::strcmp(argv[i], "-n") == 0) {
+            opts.flags |= GRAFT_UPDATE_DRY_RUN;
+        } else if (argv[i][0] == '-' && argv[i][1]) {
+            std::fprintf(stderr, "graft update: bad option '%s'\n", argv[i]);
+            return kExitUsage;
+        } else {
+            pos.push_back(argv[i]);
+        }
+    }
+    if (pos.size() != 2) {
+        std::fputs("usage: graft update [--dry-run] PACKAGE DIR\n", stderr);
+        return kExitUsage;
+    }
+    if (graft_status st = graft_update(pos[0], pos[1], &opts); st != GRAFT_OK) return fail("update", st);
+    return kExitOk;
+}
+
 int cmd_info(const char *path) {
     std::FILE *f = std::fopen(path, "rb");
     if (!f) return fail_errno(path);
@@ -320,13 +488,20 @@ int main(int argc, char **argv) {
     if (cmd == "apply" && nargs == 3) return run_apply(args[0], args[1], args[2]);
     if (cmd == "verify" && nargs == 2) return run_apply(args[0], args[1], nullptr);
     if (cmd == "info" && nargs == 1) return cmd_info(args[0]);
+    if (cmd == "pack") return cmd_pack(nargs, args);
+    if (cmd == "update") return cmd_update(nargs, args);
+    if (cmd == "list" && nargs == 1) {
+        if (graft_status st = graft_package_describe(args[0], log_to_stderr, nullptr); st != GRAFT_OK)
+            return fail(args[0], st);
+        return kExitOk;
+    }
     if (cmd == "hash" && nargs >= 1) {
         int rc = kExitOk;
         for (int i = 0; i < nargs; ++i)
             if (hash_one(args[i]) != kExitOk) rc = kExitFail;
         return rc;
     }
-    if (cmd == "apply" || cmd == "verify" || cmd == "info" || cmd == "hash") {
+    if (cmd == "apply" || cmd == "verify" || cmd == "info" || cmd == "hash" || cmd == "list") {
         std::fprintf(stderr, "graft %s: wrong number of arguments\n", argv[1]);
         usage(stderr);
         return kExitUsage;

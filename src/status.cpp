@@ -10,6 +10,7 @@ extern "C" const char *graft_status_string(graft_status status) {
     case GRAFT_E_LIMIT:        return "input exceeds safety limit";
     case GRAFT_E_WRONG_SOURCE: return "source does not match patch";
     case GRAFT_E_UNSUPPORTED:  return "unsupported format or feature";
+    case GRAFT_E_CONFLICT:     return "installed files don't match the package";
     case GRAFT_STATUS_MAX_ENUM_: break;
     }
     return "unknown status";

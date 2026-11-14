@@ -2,7 +2,8 @@
 
 A `.gft` file turns one source blob into one target blob. All integers are
 little-endian. `uvarint` is LEB128 (7 bits per byte, low bits first, at most
-10 bytes, and the value must fit in 64 bits). `svarint` is a zigzag-encoded
+10 bytes, the value must fit in 64 bits, and the encoding must be minimal: no
+trailing `0x00` byte). `svarint` is a zigzag-encoded
 `uvarint`.
 
 ```

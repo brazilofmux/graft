@@ -1,0 +1,80 @@
+# cmake -DGRAFT=<graft binary> -DWORK=<scratch dir> -P cli_package.cmake
+#
+# Trees through the CLI: pack two old releases, list, dry-run, update each,
+# then a conflict that must leave the tree alone.
+
+file(REMOVE_RECURSE "${WORK}")
+file(MAKE_DIRECTORY "${WORK}")
+
+string(REPEAT "binary-ish payload " 400 code)
+file(WRITE "${WORK}/r1/bin/tool"     "${code}SERIAL:00000000${code}")
+file(WRITE "${WORK}/r1/etc/old.conf" "old")
+file(WRITE "${WORK}/r2/bin/tool"     "${code}v2SERIAL:00000000${code}")
+file(WRITE "${WORK}/r2/etc/old.conf" "old")
+file(WRITE "${WORK}/r3/bin/tool"     "${code}v3v2SERIAL:00000000${code}more")
+file(WRITE "${WORK}/r3/etc/new.conf" "new")
+file(WRITE "${WORK}/r3/share/readme" "hello")
+
+function(run expect_ok)
+  execute_process(COMMAND ${ARGN} RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+  if(expect_ok AND NOT rc EQUAL 0)
+    message(FATAL_ERROR "failed (${rc}): ${ARGN}\n${out}${err}")
+  elseif(NOT expect_ok AND rc EQUAL 0)
+    message(FATAL_ERROR "unexpectedly succeeded: ${ARGN}\n${out}${err}")
+  endif()
+  set(last "${out}${err}" PARENT_SCOPE)
+endfunction()
+
+function(expect_same a b)
+  execute_process(COMMAND ${CMAKE_COMMAND} -E compare_files "${a}" "${b}" RESULT_VARIABLE rc)
+  if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "${a} and ${b} differ")
+  endif()
+endfunction()
+
+run(TRUE "${GRAFT}" pack -l 9 --label 3.0 --mask "bin/*=marker=SERIAL:,len=8"
+    -o "${WORK}/up.gfp" "${WORK}/r3" "${WORK}/r1=1.0" "${WORK}/r2=2.0")
+run(TRUE "${GRAFT}" list "${WORK}/up.gfp")
+if(NOT last MATCHES "updates \\[1.0, 2.0\\] to 3.0")
+  message(FATAL_ERROR "list output unexpected:\n${last}")
+endif()
+
+foreach(rel r1 r2)
+  file(COPY "${WORK}/${rel}/" DESTINATION "${WORK}/inst-${rel}")
+endforeach()
+file(READ "${WORK}/inst-r1/bin/tool" t)
+string(REPLACE "SERIAL:00000000" "SERIAL:CUSTOMER" t "${t}")
+file(WRITE "${WORK}/inst-r1/bin/tool" "${t}")
+
+run(TRUE "${GRAFT}" update --dry-run "${WORK}/up.gfp" "${WORK}/inst-r1")
+if(NOT EXISTS "${WORK}/inst-r1/etc/old.conf")
+  message(FATAL_ERROR "dry run changed the tree")
+endif()
+
+run(TRUE "${GRAFT}" update "${WORK}/up.gfp" "${WORK}/inst-r1")
+run(TRUE "${GRAFT}" update "${WORK}/up.gfp" "${WORK}/inst-r2")
+foreach(f etc/new.conf share/readme)
+  expect_same("${WORK}/r3/${f}" "${WORK}/inst-r1/${f}")
+  expect_same("${WORK}/r3/${f}" "${WORK}/inst-r2/${f}")
+endforeach()
+expect_same("${WORK}/r3/bin/tool" "${WORK}/inst-r2/bin/tool")
+file(READ "${WORK}/r3/bin/tool" t)
+string(REPLACE "SERIAL:00000000" "SERIAL:CUSTOMER" t "${t}")
+file(WRITE "${WORK}/expected-tool" "${t}")
+expect_same("${WORK}/expected-tool" "${WORK}/inst-r1/bin/tool")
+if(EXISTS "${WORK}/inst-r1/etc/old.conf" OR EXISTS "${WORK}/inst-r1/.graft-txn")
+  message(FATAL_ERROR "old file or journal left behind")
+endif()
+run(TRUE "${GRAFT}" update "${WORK}/up.gfp" "${WORK}/inst-r1")
+if(NOT last MATCHES "already up to date")
+  message(FATAL_ERROR "second update wasn't a no-op:\n${last}")
+endif()
+
+# A local edit to a file the update must change: refuse, change nothing.
+file(COPY "${WORK}/r1/" DESTINATION "${WORK}/inst-edit")
+file(WRITE "${WORK}/inst-edit/etc/old.conf" "edited locally")
+run(FALSE "${GRAFT}" update "${WORK}/up.gfp" "${WORK}/inst-edit")
+if(NOT last MATCHES "conflict: etc/old.conf")
+  message(FATAL_ERROR "expected a conflict report:\n${last}")
+endif()
+expect_same("${WORK}/r1/bin/tool" "${WORK}/inst-edit/bin/tool")

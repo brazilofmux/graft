@@ -104,7 +104,10 @@ public:
     bool feed(uint8_t b) {
         if (shift_ == 63 && b > 1) bad_ = true;  // bits beyond 64
         value_ |= static_cast<uint64_t>(b & 0x7f) << shift_;
-        if (!(b & 0x80)) return true;
+        if (!(b & 0x80)) {
+            if (b == 0 && shift_ > 0) bad_ = true;  // non-minimal: one encoding per value
+            return true;
+        }
         shift_ += 7;
         if (shift_ > 63) {
             bad_ = true;

@@ -6,7 +6,10 @@ add_library(graft
   hash.cpp
   io.cpp
   encode.cpp
-  decode.cpp)
+  decode.cpp
+  fsutil.cpp
+  package_build.cpp
+  package_apply.cpp)
 add_library(graft::graft ALIAS graft)
 
 target_include_directories(graft

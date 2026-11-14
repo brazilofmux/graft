@@ -9,7 +9,7 @@ versions, whole trees), and JAR32-style multi-version archives.
 - `graft archive`: a versioned archive that can extract any version and
   generate a patch from any set of versions
 
-Status: **M2**. Single-file diff and apply work, with masked regions, in the `.gft` v1 format
+Status: **M3**. Single files (with masked regions) and whole directory trees work, in the `.gft` v1 format
 ([docs/FORMAT.md](docs/FORMAT.md)). See [docs/SCOPE.md](docs/SCOPE.md) for the plan.
 
 ```sh
@@ -25,6 +25,17 @@ are located when the patch is built, in both versions:
 ```sh
 graft diff --mask "marker=SERIAL:,len=19" v1.exe v2.exe update.gft
 graft apply customer.exe update.gft customer-v2.exe   # keeps the customer's serial
+```
+
+Whole trees: one package updates any of several old releases, all or
+nothing ([docs/PACKAGE.md](docs/PACKAGE.md)):
+
+```sh
+graft pack --label 3.0 --mask "bin/*.exe=marker=SERIAL:,len=19" \
+           -o update.gfp release-3.0/ release-1.0/=1.0 release-2.0/=2.0
+graft list update.gfp
+graft update --dry-run update.gfp /opt/app      # show the plan; change nothing
+graft update update.gfp /opt/app                # conflicts stop it before any change
 ```
 
 ## Building

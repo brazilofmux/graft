@@ -111,7 +111,7 @@ multi-version archive of JAR32.
 | **M0** | Repo, CMake skeleton, CI, fuzz and sanitizer builds, benchmark harness scaffold |
 | **M1** | `libgraft` single blob: suffix-array encoder, streaming decoder, `.gft` v1, `graft diff` / `graft apply`, first benchmarks |
 | **M2** | Masked regions on single files |
-| **M3** | Directory trees and multi-source packages, transactional apply |
+| **M3** | Directory trees and multi-source packages, transactional apply. Done 2026-11-13: one delta per distinct old content, shared across versions; renames by content or file name; POSIX file replacement behind std::filesystem, Windows specifics (locked files, ACLs) deferred |
 | **M4** | Versioned archive, plus `mkpatch` from an archive |
 | **M5** | Executable filters (x86, Z80, SLOW-32), rolling-hash encoder for very large files, SLOW-32 applier build |
 | **Later** | VCDIFF import/export (xdelta3 interop), self-applying patches, 16-bit DOS applier |
@@ -119,5 +119,5 @@ multi-version archive of JAR32.
 ## Open questions
 1. License (MIT, BSD-2, or Apache-2.0)? It has to be compatible with the vendored deps.
 2. ~~How should masked regions behave when the new version moves or resizes the region?~~ Decided: see Masked regions above.
-3. Should multi-source packages carry one delta per source (bigger, simple) or chain through intermediates (smaller, slower, more failure points)? Probably the encoder chooses per file.
-4. How important is Windows? (It affects the apply-side file locking, ACLs and rename semantics.)
+3. ~~One delta per source, or chains?~~ One delta per distinct old content, shared by every version with that content; no chains.
+4. ~~How important is Windows?~~ POSIX first; file replacement sits behind std::filesystem so a Windows version can slot in.

@@ -10,6 +10,8 @@ endfunction()
 graft_fuzz_target(hash fuzz_hash.cpp)
 graft_fuzz_target(apply fuzz_apply.cpp)
 graft_fuzz_target(roundtrip fuzz_roundtrip.cpp)
+graft_fuzz_target(manifest fuzz_manifest.cpp)
+target_include_directories(fuzz_manifest PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
 # Seed generator for fuzz_apply (an ordinary program, no libFuzzer main).
 add_executable(fuzz_mkseeds fuzz_mkseeds.cpp)

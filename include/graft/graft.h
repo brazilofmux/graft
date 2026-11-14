@@ -50,6 +50,7 @@ typedef enum graft_status {
     GRAFT_E_LIMIT,        /* input exceeds a configured safety limit  */
     GRAFT_E_WRONG_SOURCE, /* source doesn't match what the patch expects */
     GRAFT_E_UNSUPPORTED,  /* valid, but a format version or feature we lack */
+    GRAFT_E_CONFLICT,     /* installed files don't match any version the package knows */
 
     /* Not a status. Forces the enum to span int, so C++ code receiving a
      * value from a newer library or a C caller doesn't hit undefined behavior. */
@@ -175,9 +176,66 @@ typedef struct graft_patch_info {
     uint8_t  target_hash[GRAFT_HASH_SIZE];
 } graft_patch_info;
 
+/* Checks whether `source` is what the patch expects (size, and hash of the
+ * masked form) without applying it: GRAFT_OK or GRAFT_E_WRONG_SOURCE. */
+GRAFT_API graft_status graft_patch_check_source(const graft_reader *patch, const graft_source *source);
+
 /* Reads and validates only the header and mask table. With masks, the
  * hashes are of the normalized files (masked regions zeroed). */
 GRAFT_API graft_status graft_patch_read_info(const graft_reader *patch, graft_patch_info *info);
+
+/* ---- Packages: whole directory trees (.gfp, see docs/PACKAGE.md) -------- */
+
+enum { GRAFT_LOG_INFO = 0, GRAFT_LOG_WARN = 1, GRAFT_LOG_ERROR = 2 };
+typedef void (*graft_log_fn)(void *ctx, int level, const char *message);
+
+/* Supplies the masked regions for one file, given an old and the new
+ * version of it. Store up to `cap` masks and set *count (0 for none). */
+typedef graft_status (*graft_mask_fn)(void *ctx, const char *path,
+                                      const uint8_t *old_data, size_t old_len,
+                                      const uint8_t *new_data, size_t new_len,
+                                      graft_mask *masks, size_t cap, size_t *count);
+
+typedef struct graft_pack_options {
+    uint32_t      struct_size;  /* sizeof(graft_pack_options); set by _init */
+    int           level;        /* zstd level for deltas and full copies   */
+    graft_mask_fn masks_for;    /* NULL: no masks                          */
+    void         *masks_ctx;
+    graft_log_fn  log;          /* NULL: silent                            */
+    void         *log_ctx;
+} graft_pack_options;
+
+GRAFT_API void graft_pack_options_init(graft_pack_options *opts);
+
+/* Writes a package that updates any of the `old_count` old trees to the new
+ * tree. Labels name the versions in logs and listings. */
+GRAFT_API graft_status graft_pack(const char *new_dir, const char *new_label,
+                                  const char *const *old_dirs, const char *const *old_labels,
+                                  size_t old_count, const char *out_path,
+                                  const graft_pack_options *opts);
+
+enum { GRAFT_UPDATE_DRY_RUN = 1 };
+
+typedef struct graft_update_options {
+    uint32_t           struct_size;  /* sizeof(graft_update_options); set by _init */
+    uint32_t           flags;        /* GRAFT_UPDATE_*                      */
+    graft_apply_limits limits;       /* applied to each file's delta        */
+    graft_log_fn       log;
+    void              *log_ctx;
+} graft_update_options;
+
+GRAFT_API void graft_update_options_init(graft_update_options *opts);
+
+/* Updates the tree at `root_dir` in place. Every file the package touches is
+ * checked first; any that matches no known version fails the whole update
+ * with GRAFT_E_CONFLICT before anything changes. Changes are journaled: a
+ * failure rolls back, and an interrupted update is rolled back the next time
+ * graft_update runs on the tree. */
+GRAFT_API graft_status graft_update(const char *package_path, const char *root_dir,
+                                    const graft_update_options *opts);
+
+/* Logs a package's versions and contents, one line per entry. */
+GRAFT_API graft_status graft_package_describe(const char *package_path, graft_log_fn log, void *log_ctx);
 
 #ifdef __cplusplus
 }

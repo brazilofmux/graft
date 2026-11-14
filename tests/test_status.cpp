@@ -6,7 +6,7 @@
 
 TEST(status_strings_are_distinct_and_nonnull) {
     const graft_status all[] = {GRAFT_OK,       GRAFT_E_INVALID_ARG, GRAFT_E_NOMEM,        GRAFT_E_IO,
-                                GRAFT_E_CORRUPT, GRAFT_E_LIMIT,       GRAFT_E_WRONG_SOURCE, GRAFT_E_UNSUPPORTED};
+                                GRAFT_E_CORRUPT, GRAFT_E_LIMIT,       GRAFT_E_WRONG_SOURCE, GRAFT_E_UNSUPPORTED, GRAFT_E_CONFLICT};
     for (auto a : all) {
         CHECK(graft_status_string(a) != nullptr);
         CHECK(std::strcmp(graft_status_string(a), "unknown status") != 0);

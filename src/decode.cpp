@@ -344,6 +344,22 @@ extern "C" graft_status graft_apply(const graft_source *source, const graft_read
     return graft::guarded([&] { return graft::apply_impl(*source, *patch, *out, l); });
 }
 
+extern "C" graft_status graft_patch_check_source(const graft_reader *patch, const graft_source *source) {
+    if (!patch || !patch->read || !source || !source->read_at) return GRAFT_E_INVALID_ARG;
+    return graft::guarded([&] {
+        graft::PatchIn in(patch);
+        graft::Header h;
+        std::vector<graft::Mask> masks;
+        if (graft_status st = graft::read_preamble(in, h, masks); st != GRAFT_OK) return st;
+        if (source->size != h.source_size) return GRAFT_E_WRONG_SOURCE;
+        graft::NormalizedSource norm{source, &masks};
+        const graft_source nsrc{&norm, source->size, &graft::NormalizedSource::read_at};
+        uint8_t sh[GRAFT_HASH_SIZE];
+        if (graft_status st = graft::hash_source(masks.empty() ? *source : nsrc, sh); st != GRAFT_OK) return st;
+        return std::memcmp(sh, h.source_hash, GRAFT_HASH_SIZE) == 0 ? GRAFT_OK : GRAFT_E_WRONG_SOURCE;
+    });
+}
+
 extern "C" graft_status graft_patch_read_info(const graft_reader *patch, graft_patch_info *info) {
     if (!patch || !patch->read || !info) return GRAFT_E_INVALID_ARG;
     return graft::guarded([&] {
