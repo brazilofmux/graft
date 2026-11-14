@@ -19,11 +19,14 @@ graft_status vec_write(void *ctx, const void *p, size_t n) {
     return GRAFT_OK;
 }
 
-bool seed(const std::string &dir, int i, const Bytes &oldb, const Bytes &newb, uint32_t block) {
+bool seed(const std::string &dir, int i, const Bytes &oldb, const Bytes &newb, uint32_t block,
+          const graft_mask *mask = nullptr) {
     graft_diff_options o;
     graft_diff_options_init(&o);
     o.level = 1;
     o.block_size = block;
+    o.masks = mask;
+    o.mask_count = mask ? 1 : 0;
     Bytes patch;
     graft_sink s{&patch, vec_write};
     if (graft_diff(oldb.data(), oldb.size(), newb.data(), newb.size(), &o, &s) != GRAFT_OK) return false;
@@ -60,6 +63,8 @@ int main(int argc, char **argv) {
         b.insert(b.begin() + static_cast<std::ptrdiff_t>(n / 2), {1, 2, 3, 4});
         ok &= seed(argv[1], i++, a, b, GRAFT_DEFAULT_BLOCK_SIZE);
         ok &= seed(argv[1], i++, a, b, GRAFT_MIN_BLOCK_SIZE);
+        const graft_mask m{n / 4, 8, n / 4 + 4, 12, GRAFT_MASK_PAD, 0x20};
+        ok &= seed(argv[1], i++, a, b, GRAFT_MIN_BLOCK_SIZE, &m);
     }
     return ok ? 0 : 1;
 }

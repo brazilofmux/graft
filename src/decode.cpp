@@ -81,11 +81,57 @@ bool hashes_equal(const uint8_t *a, const uint8_t *b) {
     return std::memcmp(a, b, GRAFT_HASH_SIZE) == 0;
 }
 
-graft_status read_header(PatchIn &in, Header &h) {
+// Header plus, when flagged, the mask table.
+graft_status read_preamble(PatchIn &in, Header &h, std::vector<Mask> &masks) {
     uint8_t raw[kHeaderSize];
     if (graft_status st = in.read(raw, sizeof raw); st != GRAFT_OK) return st;
-    return decode_header(raw, h);
+    if (graft_status st = decode_header(raw, h); st != GRAFT_OK) return st;
+    masks.clear();
+    if (!(h.flags & kFlagMasks)) return GRAFT_OK;
+
+    uint64_t count;
+    if (graft_status st = in.read_uvarint(count); st != GRAFT_OK) return st;
+    if (count == 0 || count > kMaxMasks) return GRAFT_E_CORRUPT;
+    masks.resize(static_cast<size_t>(count));
+    for (Mask &k : masks) {
+        uint8_t mp[2];
+        if (graft_status st = in.read_uvarint(k.old_offset); st != GRAFT_OK) return st;
+        if (graft_status st = in.read_uvarint(k.old_length); st != GRAFT_OK) return st;
+        if (graft_status st = in.read_uvarint(k.new_offset); st != GRAFT_OK) return st;
+        if (graft_status st = in.read_uvarint(k.new_length); st != GRAFT_OK) return st;
+        if (graft_status st = in.read(mp, 2); st != GRAFT_OK) return st;
+        k.mode = mp[0];
+        k.pad = mp[1];
+    }
+    return masks_valid(masks, h.source_size, h.target_size) ? GRAFT_OK : GRAFT_E_CORRUPT;
 }
+
+// The installed source as the patch sees it: masked regions read as kMaskFill.
+struct NormalizedSource {
+    const graft_source *real;
+    const std::vector<Mask> *masks;  // sorted by old_offset, disjoint
+
+    static graft_status read_at(void *ctx, uint64_t off, void *buf, size_t len) {
+        auto *self = static_cast<NormalizedSource *>(ctx);
+        if (graft_status st = self->real->read_at(self->real->ctx, off, buf, len); st != GRAFT_OK) return st;
+        const auto &m = *self->masks;
+        auto it = std::partition_point(m.begin(), m.end(),
+                                       [&](const Mask &k) { return k.old_offset + k.old_length <= off; });
+        for (; it != m.end() && it->old_offset < off + len; ++it) {
+            const uint64_t lo = std::max(it->old_offset, off);
+            const uint64_t hi = std::min(it->old_offset + it->old_length, off + len);
+            std::memset(static_cast<uint8_t *>(buf) + (lo - off), kMaskFill, static_cast<size_t>(hi - lo));
+        }
+        return GRAFT_OK;
+    }
+};
+
+// Bytes to write over the output at [offset, offset + bytes.size()).
+struct Stamp {
+    uint64_t offset;
+    std::vector<uint8_t> bytes;
+    uint64_t end() const { return offset + bytes.size(); }
+};
 
 graft_status hash_source(const graft_source &src, uint8_t out[GRAFT_HASH_SIZE]) {
     blake3_hasher h;
@@ -103,8 +149,9 @@ graft_status hash_source(const graft_source &src, uint8_t out[GRAFT_HASH_SIZE]) 
 
 class Decoder {
 public:
-    Decoder(const graft_source &src, PatchIn &in, const graft_sink &out, const Header &h)
-        : src_(src), in_(in), out_(out), h_(h), scratch_(1 << 16) {
+    Decoder(const graft_source &src, PatchIn &in, const graft_sink &out, const Header &h,
+            const std::vector<Stamp> &stamps)
+        : src_(src), in_(in), out_(out), h_(h), stamps_(stamps), scratch_(1 << 16) {
         blake3_hasher_init(&target_hash_);
     }
 
@@ -145,11 +192,24 @@ private:
         return GRAFT_OK;
     }
 
+    // The target hash covers the normalized output; stamps go on after.
     graft_status emit(const uint8_t *p, size_t n) {
         if (n == 0) return GRAFT_OK;
         blake3_hasher_update(&target_hash_, p, n);
+        const uint8_t *outp = p;
+        while (stamp_ < stamps_.size() && stamps_[stamp_].end() <= produced_) ++stamp_;
+        if (stamp_ < stamps_.size() && stamps_[stamp_].offset < produced_ + n) {
+            overlay_.assign(p, p + n);
+            for (size_t i = stamp_; i < stamps_.size() && stamps_[i].offset < produced_ + n; ++i) {
+                const Stamp &s = stamps_[i];
+                const uint64_t lo = std::max(s.offset, produced_), hi = std::min(s.end(), produced_ + n);
+                std::memcpy(overlay_.data() + (lo - produced_), s.bytes.data() + (lo - s.offset),
+                            static_cast<size_t>(hi - lo));
+            }
+            outp = overlay_.data();
+        }
         produced_ += n;
-        return out_.write(out_.ctx, p, n);
+        return out_.write(out_.ctx, outp, n);
     }
 
     graft_status block() {
@@ -205,8 +265,10 @@ private:
     PatchIn &in_;
     const graft_sink &out_;
     const Header &h_;
+    const std::vector<Stamp> &stamps_;  // sorted by offset, disjoint
+    size_t stamp_ = 0;
     std::unique_ptr<ZSTD_DCtx, DCtxDeleter> dctx_;
-    std::vector<uint8_t> ctrl_, diff_, extra_, cbuf_, scratch_;
+    std::vector<uint8_t> ctrl_, diff_, extra_, cbuf_, scratch_, overlay_;
     uint64_t oldpos_ = 0, produced_ = 0;
     blake3_hasher target_hash_;
 };
@@ -215,15 +277,36 @@ graft_status apply_impl(const graft_source &src, const graft_reader &patch, cons
                         const graft_apply_limits &lim) {
     PatchIn in(&patch);
     Header h;
-    if (graft_status st = read_header(in, h); st != GRAFT_OK) return st;
+    std::vector<Mask> masks;
+    if (graft_status st = read_preamble(in, h, masks); st != GRAFT_OK) return st;
     if (h.max_stream > lim.max_stream || h.target_size > lim.max_target_size) return GRAFT_E_LIMIT;
+    uint64_t old_total = 0, new_total = 0;  // each <= source/target size: no overflow
+    for (const Mask &k : masks) {
+        old_total += k.old_length;
+        new_total += k.new_length;
+    }
+    if (old_total > lim.max_stream || new_total > lim.max_stream) return GRAFT_E_LIMIT;
     if (src.size != h.source_size) return GRAFT_E_WRONG_SOURCE;
 
+    // Lift the installed bytes out of each masked region.
+    std::vector<Stamp> stamps;
+    for (const Mask &k : masks) {
+        Stamp s{k.new_offset, std::vector<uint8_t>(static_cast<size_t>(k.new_length), k.pad)};
+        const size_t keep = static_cast<size_t>(std::min(k.old_length, k.new_length));
+        if (graft_status st = src.read_at(src.ctx, k.old_offset, s.bytes.data(), keep); st != GRAFT_OK) return st;
+        stamps.push_back(std::move(s));
+    }
+    std::sort(stamps.begin(), stamps.end(), [](const Stamp &a, const Stamp &b) { return a.offset < b.offset; });
+
+    NormalizedSource norm{&src, &masks};
+    const graft_source nsrc{&norm, src.size, &NormalizedSource::read_at};
+    const graft_source &use = masks.empty() ? src : nsrc;
+
     uint8_t sh[GRAFT_HASH_SIZE];
-    if (graft_status st = hash_source(src, sh); st != GRAFT_OK) return st;
+    if (graft_status st = hash_source(use, sh); st != GRAFT_OK) return st;
     if (!hashes_equal(sh, h.source_hash)) return GRAFT_E_WRONG_SOURCE;
 
-    Decoder d(src, in, out, h);
+    Decoder d(use, in, out, h, stamps);
     return d.run();
 }
 
@@ -266,7 +349,9 @@ extern "C" graft_status graft_patch_read_info(const graft_reader *patch, graft_p
     return graft::guarded([&] {
         graft::PatchIn in(patch);
         graft::Header h;
-        if (graft_status st = graft::read_header(in, h); st != GRAFT_OK) return st;
+        std::vector<graft::Mask> masks;
+        if (graft_status st = graft::read_preamble(in, h, masks); st != GRAFT_OK) return st;
+        info->mask_count = static_cast<uint32_t>(masks.size());
         info->format_version = h.version;
         info->flags = h.flags;
         info->max_stream = h.max_stream;

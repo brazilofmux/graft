@@ -3,7 +3,9 @@
 
 #include "graft/graft.h"
 
+#include <algorithm>
 #include <cstddef>
+#include <utility>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -17,6 +19,9 @@ inline constexpr uint8_t kTagEnd = 0x00;
 inline constexpr uint8_t kTagBlock = 0x01;
 inline constexpr size_t kMaxVarint = 10;
 inline constexpr size_t kMaxTriple = 3 * kMaxVarint;
+inline constexpr uint16_t kFlagMasks = 0x0001;
+inline constexpr uint16_t kKnownFlags = kFlagMasks;
+inline constexpr size_t kMaxMasks = 4096;
 
 // Fuzz builds skip hash comparisons (the fuzzer can't forge BLAKE3), so it
 // can reach the block decoder. Never defined in a production build.
@@ -70,7 +75,7 @@ inline graft_status decode_header(const uint8_t in[kHeaderSize], Header &h) {
     std::memcpy(h.source_hash, in + 28, GRAFT_HASH_SIZE);
     std::memcpy(h.target_hash, in + 60, GRAFT_HASH_SIZE);
     h.max_stream = get_le<uint32_t>(in + 92);
-    if (h.version != kFormatVersion || h.flags != 0) return GRAFT_E_UNSUPPORTED;
+    if (h.version != kFormatVersion || (h.flags & ~kKnownFlags) != 0) return GRAFT_E_UNSUPPORTED;
     return GRAFT_OK;
 }
 
@@ -127,5 +132,59 @@ inline bool get_uvarint(const uint8_t *&p, const uint8_t *end, uint64_t &v) {
     }
     return false;
 }
+
+// --- masks -------------------------------------------------------------------
+
+// A masked region. Ordering and validity rules live in masks_valid(); the
+// encoder and decoder must agree on them exactly.
+struct Mask {
+    uint64_t old_offset, old_length, new_offset, new_length;
+    uint8_t mode;  // GRAFT_MASK_EXACT / _PAD / _TRUNCATE
+    uint8_t pad;
+};
+
+// Canonical and in bounds: at least one, at most kMaxMasks; sorted by
+// old_offset; old regions disjoint, new regions disjoint; no empty region;
+// lengths consistent with the mode.
+inline bool masks_valid(const std::vector<Mask> &m, uint64_t source_size, uint64_t target_size) {
+    if (m.empty() || m.size() > kMaxMasks) return false;
+    std::vector<std::pair<uint64_t, uint64_t>> news;
+    news.reserve(m.size());
+    uint64_t prev_old_end = 0;
+    for (size_t i = 0; i < m.size(); ++i) {
+        const Mask &k = m[i];
+        if (k.old_length == 0 || k.new_length == 0) return false;
+        if (k.old_offset > source_size || k.old_length > source_size - k.old_offset) return false;
+        if (k.new_offset > target_size || k.new_length > target_size - k.new_offset) return false;
+        if (i > 0 && k.old_offset < prev_old_end) return false;
+        prev_old_end = k.old_offset + k.old_length;
+        switch (k.mode) {
+        case GRAFT_MASK_EXACT:    if (k.new_length != k.old_length) return false; break;
+        case GRAFT_MASK_PAD:      if (k.new_length < k.old_length) return false; break;
+        case GRAFT_MASK_TRUNCATE: if (k.new_length > k.old_length) return false; break;
+        default: return false;
+        }
+        news.emplace_back(k.new_offset, k.new_offset + k.new_length);
+    }
+    std::sort(news.begin(), news.end());
+    for (size_t i = 1; i < news.size(); ++i)
+        if (news[i].first < news[i - 1].second) return false;
+    return true;
+}
+
+inline void encode_masks(const std::vector<Mask> &m, std::vector<uint8_t> &out) {
+    put_uvarint(out, m.size());
+    for (const Mask &k : m) {
+        put_uvarint(out, k.old_offset);
+        put_uvarint(out, k.old_length);
+        put_uvarint(out, k.new_offset);
+        put_uvarint(out, k.new_length);
+        out.push_back(k.mode);
+        out.push_back(k.pad);
+    }
+}
+
+// Placeholder byte for masked regions in the normalized old and new files.
+inline constexpr uint8_t kMaskFill = 0x00;
 
 }  // namespace graft

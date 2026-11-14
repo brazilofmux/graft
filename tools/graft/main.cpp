@@ -1,6 +1,7 @@
 // graft: command-line front end to libgraft.
 
 #include "graft/graft.h"
+#include "masks.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -30,8 +31,12 @@ void usage(std::FILE *out) {
         "usage: graft <command> [args]\n"
         "\n"
         "commands:\n"
-        "  diff [-l LEVEL] [-b BLOCK] OLD NEW PATCH\n"
-        "                   write a patch turning OLD into NEW\n"
+        "  diff [-l LEVEL] [-b BLOCK] [--mask SPEC]... [--mask-file FILE] OLD NEW PATCH\n"
+        "                   write a patch turning OLD into NEW. Masked regions\n"
+        "                   keep the installed file's bytes (serials, keys):\n"
+        "                     at=OFF:LEN | old=OFF:LEN,new=OFF:LEN |\n"
+        "                     marker=TEXT|hex:HEX,len=N[,skip=K]\n"
+        "                     [,newlen=N,pad=BYTE|truncate]\n"
         "  apply OLD PATCH NEW\n"
         "                   apply PATCH to OLD, writing NEW\n"
         "  verify OLD PATCH check that PATCH applies cleanly to OLD\n"
@@ -165,6 +170,7 @@ int cmd_diff(int argc, char **argv) {
     graft_diff_options opts;
     graft_diff_options_init(&opts);
     std::vector<const char *> pos;
+    std::vector<std::string> specs;
     for (int i = 0; i < argc; ++i) {
         const std::string_view a = argv[i];
         unsigned long v;
@@ -174,6 +180,14 @@ int cmd_diff(int argc, char **argv) {
         } else if ((a == "-b" || a == "--block-size") && i + 1 < argc && parse_uint(argv[i + 1], v)) {
             opts.block_size = static_cast<uint32_t>(v);
             ++i;
+        } else if (a == "--mask" && i + 1 < argc) {
+            specs.emplace_back(argv[++i]);
+        } else if (a == "--mask-file" && i + 1 < argc) {
+            std::string err;
+            if (!cli::read_mask_file(argv[++i], specs, err)) {
+                std::fprintf(stderr, "graft diff: %s\n", err.c_str());
+                return kExitFail;
+            }
         } else if (a.size() > 1 && a[0] == '-') {
             std::fprintf(stderr, "graft diff: bad option '%s'\n", argv[i]);
             return kExitUsage;
@@ -188,6 +202,23 @@ int cmd_diff(int argc, char **argv) {
     InputFile oldf, newf;
     if (!oldf.open(pos[0])) return fail_errno(pos[0]);
     if (!newf.open(pos[1])) return fail_errno(pos[1]);
+
+    std::vector<graft_mask> masks;
+    for (const auto &spec : specs) {
+        graft_mask m;
+        std::string err;
+        if (!cli::resolve_mask(spec, oldf.data(), oldf.size(), newf.data(), newf.size(), m, err)) {
+            std::fprintf(stderr, "graft diff: mask '%s': %s\n", spec.c_str(), err.c_str());
+            return kExitFail;
+        }
+        std::fprintf(stderr, "mask: OLD 0x%llx+%llu -> NEW 0x%llx+%llu\n", static_cast<unsigned long long>(m.old_offset),
+                     static_cast<unsigned long long>(m.old_length), static_cast<unsigned long long>(m.new_offset),
+                     static_cast<unsigned long long>(m.new_length));
+        masks.push_back(m);
+    }
+    opts.masks = masks.data();
+    opts.mask_count = masks.size();
+
     OutputFile out(pos[2]);
     if (!out.open()) return fail_errno(out.tmp_path().c_str());
     graft_sink sink{out.file(), file_write};
@@ -235,6 +266,7 @@ int cmd_info(const char *path) {
     std::printf("\ntarget:      %llu bytes  ", static_cast<unsigned long long>(info.target_size));
     hex(stdout, info.target_hash, GRAFT_HASH_SIZE);
     std::printf("\nmax stream:  %u bytes\n", info.max_stream);
+    if (info.mask_count) std::printf("masks:       %u (source and target hashes are of the masked forms)\n", info.mask_count);
     return kExitOk;
 }
 

@@ -108,10 +108,29 @@ GRAFT_API graft_source graft_source_from_memory(const void *data, size_t len);
 #define GRAFT_MIN_BLOCK_SIZE     64u
 #define GRAFT_MAX_BLOCK_SIZE     (1u << 30)
 
+/* Masked regions: bytes that differ per install (serials, keys, ...). The
+ * installed file's bytes at [old_offset, +old_length) are carried into the
+ * new file at [new_offset, +new_length), and are excluded from the source
+ * hash. Regions are located when the patch is built (see docs/SCOPE.md). */
+enum {
+    GRAFT_MASK_EXACT    = 0,  /* lengths equal                                  */
+    GRAFT_MASK_PAD      = 1,  /* new_length >= old_length; fill the rest with pad */
+    GRAFT_MASK_TRUNCATE = 2   /* new_length <= old_length; keep the leading bytes */
+};
+
+typedef struct graft_mask {
+    uint64_t old_offset, old_length;
+    uint64_t new_offset, new_length;
+    uint8_t  mode;  /* GRAFT_MASK_* */
+    uint8_t  pad;   /* fill byte for GRAFT_MASK_PAD */
+} graft_mask;
+
 typedef struct graft_diff_options {
     uint32_t struct_size;  /* sizeof(graft_diff_options); set by _init */
     int      level;        /* zstd level 1..22                          */
     uint32_t block_size;   /* output bytes per block (memory/ratio trade) */
+    const graft_mask *masks;  /* any order; regions must not overlap    */
+    size_t   mask_count;      /* 0..4096                                 */
 } graft_diff_options;
 
 GRAFT_API void graft_diff_options_init(graft_diff_options *opts);
@@ -149,13 +168,15 @@ typedef struct graft_patch_info {
     uint16_t format_version;
     uint16_t flags;
     uint32_t max_stream;
+    uint32_t mask_count;
     uint64_t source_size;
     uint64_t target_size;
     uint8_t  source_hash[GRAFT_HASH_SIZE];
     uint8_t  target_hash[GRAFT_HASH_SIZE];
 } graft_patch_info;
 
-/* Reads and validates only the header. */
+/* Reads and validates only the header and mask table. With masks, the
+ * hashes are of the normalized files (masked regions zeroed). */
 GRAFT_API graft_status graft_patch_read_info(const graft_reader *patch, graft_patch_info *info);
 
 #ifdef __cplusplus

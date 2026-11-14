@@ -9,7 +9,7 @@ versions, whole trees), and JAR32-style multi-version archives.
 - `graft archive`: a versioned archive that can extract any version and
   generate a patch from any set of versions
 
-Status: **M1**. Single-file diff and apply work, in the `.gft` v1 format
+Status: **M2**. Single-file diff and apply work, with masked regions, in the `.gft` v1 format
 ([docs/FORMAT.md](docs/FORMAT.md)). See [docs/SCOPE.md](docs/SCOPE.md) for the plan.
 
 ```sh
@@ -17,6 +17,14 @@ graft diff OLD NEW PATCH        # -l LEVEL (zstd 1-22, default 19), -b BLOCK (by
 graft apply OLD PATCH NEW       # writes NEW only if every check passes
 graft verify OLD PATCH
 graft info PATCH
+```
+
+Masked regions keep each install's own bytes (serial numbers, keys). They
+are located when the patch is built, in both versions:
+
+```sh
+graft diff --mask "marker=SERIAL:,len=19" v1.exe v2.exe update.gft
+graft apply customer.exe update.gft customer-v2.exe   # keeps the customer's serial
 ```
 
 ## Building

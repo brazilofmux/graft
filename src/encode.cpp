@@ -254,7 +254,20 @@ graft_status compress(ZSTD_CCtx *cctx, const std::vector<uint8_t> &raw, std::vec
 }
 
 graft_status diff_impl(const uint8_t *src, size_t slen, const uint8_t *tgt, size_t tlen,
-                       const graft_diff_options &o, const graft_sink *sink) {
+                       const graft_diff_options &o, const std::vector<Mask> &masks, const graft_sink *sink) {
+    // With masks, diff the normalized files: every masked region zeroed.
+    std::vector<uint8_t> nsrc, ntgt;
+    if (!masks.empty()) {
+        nsrc.assign(src, src + slen);
+        ntgt.assign(tgt, tgt + tlen);
+        for (const Mask &k : masks) {
+            std::memset(nsrc.data() + k.old_offset, kMaskFill, static_cast<size_t>(k.old_length));
+            std::memset(ntgt.data() + k.new_offset, kMaskFill, static_cast<size_t>(k.new_length));
+        }
+        src = nsrc.data();
+        tgt = ntgt.data();
+    }
+
     std::vector<Control> controls;
     if (graft_status st = make_controls(src, slen, tgt, tlen, controls); st != GRAFT_OK) return st;
 
@@ -263,6 +276,7 @@ graft_status diff_impl(const uint8_t *src, size_t slen, const uint8_t *tgt, size
     controls = {};
 
     Header h;
+    h.flags = masks.empty() ? 0 : kFlagMasks;
     h.source_size = slen;
     h.target_size = tlen;
     graft_hash(src, slen, h.source_hash);
@@ -275,6 +289,11 @@ graft_status diff_impl(const uint8_t *src, size_t slen, const uint8_t *tgt, size
     uint8_t hdr[kHeaderSize];
     encode_header(h, hdr);
     if (graft_status st = out.write(hdr, sizeof hdr); st != GRAFT_OK) return st;
+    if (!masks.empty()) {
+        std::vector<uint8_t> table;
+        encode_masks(masks, table);
+        if (graft_status st = out.write(table.data(), table.size()); st != GRAFT_OK) return st;
+    }
 
     std::unique_ptr<ZSTD_CCtx, CCtxDeleter> cctx(ZSTD_createCCtx());
     if (!cctx) return GRAFT_E_NOMEM;
@@ -314,6 +333,8 @@ extern "C" void graft_diff_options_init(graft_diff_options *o) {
     o->struct_size = sizeof *o;
     o->level = GRAFT_DEFAULT_LEVEL;
     o->block_size = GRAFT_DEFAULT_BLOCK_SIZE;
+    o->masks = nullptr;
+    o->mask_count = 0;
 }
 
 extern "C" graft_status graft_diff(const void *source, size_t source_len, const void *target, size_t target_len,
@@ -323,14 +344,22 @@ extern "C" graft_status graft_diff(const void *source, size_t source_len, const 
     graft_diff_options_init(&o);
     if (opts) {
         if (opts->struct_size < sizeof o) return GRAFT_E_INVALID_ARG;
-        o.level = opts->level;
-        o.block_size = opts->block_size;
+        o = *opts;
     }
+    if (o.mask_count > graft::kMaxMasks || (o.mask_count && !o.masks)) return GRAFT_E_INVALID_ARG;
     if (o.level < 1 || o.level > ZSTD_maxCLevel()) return GRAFT_E_INVALID_ARG;
     if (o.block_size < GRAFT_MIN_BLOCK_SIZE || o.block_size > GRAFT_MAX_BLOCK_SIZE) return GRAFT_E_INVALID_ARG;
     try {
+        std::vector<graft::Mask> masks;
+        for (size_t i = 0; i < o.mask_count; ++i) {
+            const graft_mask &m = o.masks[i];
+            masks.push_back({m.old_offset, m.old_length, m.new_offset, m.new_length, m.mode, m.pad});
+        }
+        std::sort(masks.begin(), masks.end(),
+                  [](const graft::Mask &a, const graft::Mask &b) { return a.old_offset < b.old_offset; });
+        if (!masks.empty() && !graft::masks_valid(masks, source_len, target_len)) return GRAFT_E_INVALID_ARG;
         return graft::diff_impl(static_cast<const uint8_t *>(source), source_len, static_cast<const uint8_t *>(target),
-                                target_len, o, out);
+                                target_len, o, masks, out);
     } catch (const std::bad_alloc &) {
         return GRAFT_E_NOMEM;
     } catch (const std::length_error &) {

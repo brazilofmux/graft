@@ -39,15 +39,22 @@ multi-version archive of JAR32.
 - **Multi-source:** one package updates from *any* of V1…Vn to Vn+1. Each
   installed file's version is identified by its (masked) hash, and deltas are
   shared across sources wherever the source bytes match.
-- **Masked regions:**
-  - *Specify* a region by offset and length, by marker or signature search
-    (find `"SERIAL:"` and take the next 16 bytes), or by per-file rules.
-  - *Build:* masked bytes are wildcards for hashing, version identification
-    and matching.
-  - *Apply:* the installed file's bytes for that region are carried into
-    the new file at the corresponding location, either **preserve** or
-    **relocate** (open question: whether we also need a **regenerate**
-    hook).
+- **Masked regions** (decided 2026-11-13):
+  - *Located when the patch is built*, by offset or by a marker that must
+    occur exactly once, in both the old and the new version. The patch
+    records the mapping (old offset and length to new offset and length),
+    so the machine applying it never searches.
+  - *Apply:* the installed file's bytes in each region are lifted out, and
+    the region is overwritten with a fixed placeholder so every install
+    looks identical; the source hash covers this normalized form. An
+    ordinary delta runs, and the saved bytes are written into the new file
+    at the new offsets. The delta engine itself knows nothing about masks.
+  - *Size changes* fail when the patch is built, unless the builder gives
+    an explicit `pad=BYTE` or `truncate` rule. A bad guess about a serial
+    field should surface on the builder's machine, not on a user's.
+  - Searching at apply time (a region at a different offset on each
+    install) and a *regenerate* hook are deferred until a real case needs
+    them.
 - **Apply:** dry-run verify, transactional apply with backup and rollback,
   resume after interruption, and path-traversal and symlink-attack hardening.
 
@@ -111,6 +118,6 @@ multi-version archive of JAR32.
 
 ## Open questions
 1. License (MIT, BSD-2, or Apache-2.0)? It has to be compatible with the vendored deps.
-2. How should masked regions behave when the *new* version moves or resizes the region? Relocate by marker, or fail?
+2. ~~How should masked regions behave when the new version moves or resizes the region?~~ Decided: see Masked regions above.
 3. Should multi-source packages carry one delta per source (bigger, simple) or chain through intermediates (smaller, slower, more failure points)? Probably the encoder chooses per file.
 4. How important is Windows? (It affects the apply-side file locking, ACLs and rename semantics.)

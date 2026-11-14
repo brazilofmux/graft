@@ -1,4 +1,4 @@
-add_executable(graft_tests test_main.cpp test_hash.cpp test_status.cpp test_codec.cpp)
+add_executable(graft_tests test_main.cpp test_hash.cpp test_status.cpp test_codec.cpp test_masks.cpp)
 target_link_libraries(graft_tests PRIVATE graft::graft)
 target_include_directories(graft_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 graft_warnings(graft_tests)
@@ -20,6 +20,10 @@ if(GRAFT_TOOLS)
   add_test(NAME cli.roundtrip COMMAND ${CMAKE_COMMAND}
     -DGRAFT=$<TARGET_FILE:graft_cli> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli_roundtrip
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cli_roundtrip.cmake)
+
+  add_test(NAME cli.masks COMMAND ${CMAKE_COMMAND}
+    -DGRAFT=$<TARGET_FILE:graft_cli> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli_masks
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cli_masks.cmake)
 
   add_test(NAME cli.unknown COMMAND graft_cli frobnicate)
   set_tests_properties(cli.unknown PROPERTIES WILL_FAIL TRUE)
