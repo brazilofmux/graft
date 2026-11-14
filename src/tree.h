@@ -21,7 +21,7 @@ using Tree = std::map<std::string, Node>;  // relative '/'-separated path -> nod
 
 class Log {
 public:
-    Log(graft_log_fn fn, void *ctx) : fn_(fn), ctx_(ctx) {}
+    Log(graft_log_fn log_fn, void *log_ctx) : fn_(log_fn), ctx_(log_ctx) {}
     void operator()(int level, const std::string &msg) const {
         if (fn_) fn_(ctx_, level, msg.c_str());
     }
