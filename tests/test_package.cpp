@@ -418,3 +418,59 @@ TEST(package_user_owned_files) {
     CHECK_EQ(update(pkg, fresh), GRAFT_OK);
     CHECK(read(fresh / "game/netmux.conf") == "port 2860\n");
 }
+
+#if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+
+TEST(package_windows_refuses_locked_file) {
+    // Like updating while netmux.exe is still running: the file is held
+    // open without sharing. The update must refuse, name it, change nothing.
+    Fixture f;
+    CHECK_EQ(f.pack(), GRAFT_OK);
+    const fs::path inst = f.install(f.v1, "i");
+    const auto before = snapshot(inst);
+    HANDLE h = CreateFileW((inst / "lib/moved").c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    CHECK(h != INVALID_HANDLE_VALUE);
+    static std::string log;
+    log.clear();
+    graft_update_options o;
+    graft_update_options_init(&o);
+    o.log = [](void *, int, const char *m) { log += std::string(m) + "\n"; };
+    CHECK_EQ(graft_update(f.pkg.string().c_str(), inst.string().c_str(), &o), GRAFT_E_CONFLICT);
+    CHECK(log.find("lib/moved: in use") != std::string::npos);
+    CloseHandle(h);
+    CHECK(snapshot(inst) == before);
+    CHECK_EQ(update(f.pkg, inst), GRAFT_OK);  // once released, it goes through
+}
+
+TEST(package_windows_refuses_reserved_names) {
+    TempDir t;
+    const fs::path root = t.path / "root", pkg = t.path / "p.gfp";
+    fs::create_directories(root);
+    for (const char *bad : {"CON", "nul.txt", "dir/com1", "lpt9.log", "trailing.", "trailing ", "a|b", "q?"}) {
+        Manifest m;
+        Entry e;
+        e.path = bad;
+        e.kind = graft::pkg::kDir;
+        e.mode = 0755;
+        m.entries.push_back(e);
+        if (std::string(bad).find('/') != std::string::npos) {
+            Entry d;
+            d.path = "dir";
+            d.kind = graft::pkg::kDir;
+            d.mode = 0755;
+            m.entries.insert(m.entries.begin(), d);
+        }
+        write_package(pkg, m);
+        if (update(pkg, root) != GRAFT_E_CONFLICT)
+            check::fail(__FILE__, __LINE__, std::string("accepted a reserved name: '") + bad + "'");
+    }
+}
+#endif
