@@ -46,7 +46,7 @@ graft_status open_package(const fs::path &path, Package &pk, const Log &log) {
     std::error_code ec;
     pk.size = fs::file_size(path, ec);
     if (ec || !pk.f.open(path, "rb")) {
-        log(GRAFT_LOG_ERROR, path.string() + ": can't open");
+        log(GRAFT_LOG_ERROR, u8str(path) + ": can't open");
         return GRAFT_E_IO;
     }
     if (pk.size < kHeaderSize + kFooterSize + GRAFT_HASH_SIZE) return GRAFT_E_CORRUPT;
@@ -122,16 +122,16 @@ Stat lstat_rel(const fs::path &root, const std::string &rel) {
     fs::path cur = root;
     std::error_code ec;
     for (size_t i = 0; i + 1 < parts.size(); ++i) {
-        cur /= parts[i];
+        cur /= u8path(parts[i]);
         const auto st = fs::symlink_status(cur, ec);
         if (st.type() == fs::file_type::not_found) return {Kind::Missing, {}};
         if (ec || fs::is_symlink(st) || !fs::is_directory(st)) return {Kind::Unsafe, {}};
     }
-    cur /= parts.back();
+    cur /= u8path(parts.back());
     const auto st = fs::symlink_status(cur, ec);
     if (st.type() == fs::file_type::not_found) return {Kind::Missing, {}};
     if (ec) return {Kind::Unsafe, {}};
-    if (fs::is_symlink(st)) return {Kind::Symlink, fs::read_symlink(cur, ec).generic_string()};
+    if (fs::is_symlink(st)) return {Kind::Symlink, u8str(fs::read_symlink(cur, ec))};
     if (fs::is_directory(st)) return {Kind::Dir, {}};
     if (fs::is_regular_file(st)) return {Kind::File, {}};
     return {Kind::Other, {}};
@@ -218,7 +218,7 @@ struct Planner {
         if (st.kind != Kind::File) return false;
         File src;
         std::error_code ec;
-        const fs::path sp = root / r.source_path;
+        const fs::path sp = join(root, r.source_path);
         const uint64_t size = fs::file_size(sp, ec);
         if (ec || !src.open(sp, "rb")) return false;
         FileSource fsrc{src.get(), size};
@@ -241,7 +241,7 @@ struct Planner {
         }
         if (e.what == kFile) {
             Hash h;
-            if (hash_file(root / e.path, {}, h) != GRAFT_OK) return conflict(e.path, "can't read");
+            if (hash_file(join(root, e.path), {}, h) != GRAFT_OK) return conflict(e.path, "can't read");
             if (std::find(e.known_hashes.begin(), e.known_hashes.end(), h) == e.known_hashes.end()) {
                 if (!recreated) conflict(e.path, "modified locally; not removing it");
                 return;
@@ -259,7 +259,7 @@ struct Planner {
     void plan_dir(const Entry &e) {
         const Stat st = state(e.path);
         if (st.kind == Kind::Dir) {
-            if (mode_of(root / e.path) != e.mode && future.count(e.path) == 0)
+            if (kModesSupported && mode_of(join(root, e.path)) != e.mode && future.count(e.path) == 0)
                 actions.push_back({Action::Chmod, e.path, e.mode});
             return;
         }
@@ -314,9 +314,10 @@ struct Planner {
         if (st.kind == Kind::File) {
             Hash h;
             uint64_t size = 0;
-            if (hash_file(root / e.path, e.regions, h, &size) != GRAFT_OK) return conflict(e.path, "can't read");
+            if (hash_file(join(root, e.path), e.regions, h, &size) != GRAFT_OK) return conflict(e.path, "can't read");
             if (size == e.size && h == e.current) {
-                if (mode_of(root / e.path) != e.mode) actions.push_back({Action::Chmod, e.path, e.mode});
+                if (kModesSupported && mode_of(join(root, e.path)) != e.mode)
+                    actions.push_back({Action::Chmod, e.path, e.mode});
                 return;  // already the new version
             }
         }
@@ -338,8 +339,11 @@ struct Planner {
     }
 
     void plan() {
-        for (const auto &e : pk.m.entries)
-            if (e.kind != kRemove) creates.insert(e.path);
+        for (const auto &e : pk.m.entries) {
+            if (e.kind == kRemove) continue;
+            creates.insert(e.path);
+            if (!platform_safe_path(e.path)) conflict(e.path, "this name can't be created on this platform");
+        }
         for (const auto &e : pk.m.entries)
             if (e.kind == kRemove) plan_remove(e);
         for (const auto &e : pk.m.entries) {
@@ -348,6 +352,12 @@ struct Planner {
             else if (e.kind == kFile) plan_file(e);
             else if (e.kind == kSeed) plan_seed(e);
         }
+        // A file another program holds open can't be replaced or removed
+        // (Windows): stop now, naming it, rather than failing mid-commit.
+        for (const auto &a : actions)
+            if ((a.type == Action::Remove || (a.type == Action::Install && a.replace)) &&
+                file_in_use(join(root, a.path)))
+                conflict(a.path, "in use by another program; stop it and try again");
     }
 
     std::string describe(const Action &a) const {
@@ -414,19 +424,19 @@ graft_status stage_one(const fs::path &root, Package &pk, const Action &a, const
     const Entry &e = *a.entry;
     std::error_code ec;
     if (e.kind == kSymlink) {
-        fs::create_symlink(e.link, dst, ec);
+        fs::create_symlink(u8path(e.link), dst, ec);
         return ec ? GRAFT_E_IO : GRAFT_OK;
     }
     const Recipe &r = e.recipes[static_cast<size_t>(a.recipe)];
     const Blob &b = pk.m.blobs[static_cast<size_t>(r.blob)];
     File out;
-    if (!out.open(dst, "wbx")) return GRAFT_E_IO;
+    if (!out.create(dst)) return GRAFT_E_IO;
     graft_status st;
     if (r.kind == kFull) {
         st = stage_full(pk, b, out.get(), e.size);
     } else {
         File src;
-        const fs::path sp = root / r.source_path;
+        const fs::path sp = join(root, r.source_path);
         const uint64_t size = fs::file_size(sp, ec);
         if (ec || !src.open(sp, "rb")) return GRAFT_E_IO;
         FileSource fsrc{src.get(), size};
@@ -476,12 +486,12 @@ struct Txn {
 void undo_step(const fs::path &root, const fs::path &backup, const std::vector<std::string> &f, const Log &log) {
     if (f.size() < 2 || !valid_rel_path(f[1])) return;
     std::error_code ec;
-    const fs::path p = root / f[1];
+    const fs::path p = join(root, f[1]);
     const std::string &op = f[0];
     if (op == "install") {
         if (fs::symlink_status(p, ec).type() != fs::file_type::not_found) fs::remove(p, ec);
     } else if (op == "backup") {
-        const fs::path b = backup / f[1];
+        const fs::path b = join(backup, f[1]);
         if (fs::symlink_status(b, ec).type() != fs::file_type::not_found) fs::rename(b, p, ec);
     } else if (op == "mkdir") {
         fs::remove(p, ec);  // only succeeds if empty, which it is after undoing its contents
@@ -505,7 +515,7 @@ graft_status recover(const fs::path &root, const Log &log) {
     std::error_code ec;
     if (fs::symlink_status(dir, ec).type() == fs::file_type::not_found) return GRAFT_OK;
     if (fs::is_symlink(fs::symlink_status(dir, ec)) || !fs::is_directory(dir, ec)) {
-        log(GRAFT_LOG_ERROR, (root / kTxnDir).string() + " exists and isn't a directory");
+        log(GRAFT_LOG_ERROR, u8str(root / kTxnDir) + " exists and isn't a directory");
         return GRAFT_E_CONFLICT;
     }
     std::vector<std::vector<std::string>> steps;
@@ -538,6 +548,7 @@ graft_status recover(const fs::path &root, const Log &log) {
         log(GRAFT_LOG_WARN, "an earlier update was interrupted; rolling it back");
         for (auto it = steps.rbegin(); it != steps.rend(); ++it) undo_step(root, dir / "backup", *it, log);
     }
+    make_tree_writable(dir);
     fs::remove_all(dir, ec);
     return ec ? GRAFT_E_IO : GRAFT_OK;
 }
@@ -557,9 +568,9 @@ graft_status commit(Txn &t, std::vector<Action> &actions, const std::vector<size
     auto do_backup = [&](const std::string &p) -> graft_status {
         if (graft_status s = check_fault(); s != GRAFT_OK) return s;
         if (graft_status s = t.log_step({"backup", p}); s != GRAFT_OK) return s;
-        const fs::path dst = t.backup / p;
+        const fs::path dst = join(t.backup, p);
         fs::create_directories(dst.parent_path(), ec);
-        if (!ec) fs::rename(t.root / p, dst, ec);
+        if (!ec) fs::rename(join(t.root, p), dst, ec);
         return ec ? GRAFT_E_IO : GRAFT_OK;
     };
 
@@ -578,7 +589,7 @@ graft_status commit(Txn &t, std::vector<Action> &actions, const std::vector<size
     std::stable_sort(rmdirs.begin(), rmdirs.end(),
                      [&](const Action *a, const Action *b) { return depth(a->path) > depth(b->path); });
     for (const Action *a : rmdirs) {
-        const fs::path p = t.root / a->path;
+        const fs::path p = join(t.root, a->path);
         if (!fs::is_empty(p, ec) || ec) {
             log(GRAFT_LOG_WARN, a->path + ": directory not empty; leaving it");
             continue;
@@ -595,7 +606,7 @@ graft_status commit(Txn &t, std::vector<Action> &actions, const std::vector<size
     for (const Action *a : mkdirs) {
         if (graft_status s = check_fault(); s != GRAFT_OK) return s;
         if (graft_status s = t.log_step({"mkdir", a->path}); s != GRAFT_OK) return s;
-        const fs::path p = t.root / a->path;
+        const fs::path p = join(t.root, a->path);
         if (!fs::create_directory(p, ec) || ec) return GRAFT_E_IO;
         set_mode(p, a->mode, ec);
         if (ec) return GRAFT_E_IO;
@@ -608,16 +619,16 @@ graft_status commit(Txn &t, std::vector<Action> &actions, const std::vector<size
         if (graft_status s = check_fault(); s != GRAFT_OK) return s;
         const std::string id = std::to_string(stage_ids[i]);
         if (graft_status s = t.log_step({"install", a.path, id}); s != GRAFT_OK) return s;
-        fs::rename(t.stage / id, t.root / a.path, ec);
+        fs::rename(t.stage / id, join(t.root, a.path), ec);
         if (ec) return GRAFT_E_IO;
     }
     for (const auto &a : actions) {
         if (a.type != Action::Chmod) continue;
         if (graft_status s = check_fault(); s != GRAFT_OK) return s;
         char mode[16];
-        std::snprintf(mode, sizeof mode, "%o", mode_of(t.root / a.path));
+        std::snprintf(mode, sizeof mode, "%o", mode_of(join(t.root, a.path)));
         if (graft_status s = t.log_step({"chmod", a.path, mode}); s != GRAFT_OK) return s;
-        set_mode(t.root / a.path, a.mode, ec);
+        set_mode(join(t.root, a.path), a.mode, ec);
         if (ec) return GRAFT_E_IO;
     }
     if (graft_status s = check_fault(); s != GRAFT_OK) return s;
@@ -626,7 +637,7 @@ graft_status commit(Txn &t, std::vector<Action> &actions, const std::vector<size
 
 graft_status update_impl(const char *package_path, const char *root_dir, const graft_update_options &o) {
     Log log(o.log, o.log_ctx);
-    const fs::path root(root_dir);
+    const fs::path root = u8path(root_dir);
     std::error_code ec;
     if (!fs::is_directory(root, ec)) {
         log(GRAFT_LOG_ERROR, std::string(root_dir) + ": not a directory");
@@ -636,7 +647,7 @@ graft_status update_impl(const char *package_path, const char *root_dir, const g
         if (graft_status s = recover(root, log); s != GRAFT_OK) return s;
 
     Package pk;
-    if (graft_status s = open_package(package_path, pk, log); s != GRAFT_OK) {
+    if (graft_status s = open_package(u8path(package_path), pk, log); s != GRAFT_OK) {
         if (s == GRAFT_E_CORRUPT) log(GRAFT_LOG_ERROR, std::string(package_path) + ": damaged or not a package");
         return s;
     }
@@ -654,7 +665,7 @@ graft_status update_impl(const char *package_path, const char *root_dir, const g
 
     Txn t(root);
     if (!fs::create_directory(t.dir, ec) || ec) {
-        log(GRAFT_LOG_ERROR, t.dir.string() + ": can't create (another update running?)");
+        log(GRAFT_LOG_ERROR, u8str(t.dir) + ": can't create (another update running?)");
         return GRAFT_E_IO;
     }
     fs::create_directory(t.stage, ec);
@@ -675,6 +686,7 @@ graft_status update_impl(const char *package_path, const char *root_dir, const g
             s != GRAFT_OK || fault("stage", stage_ids[i]) == 1) {
             log(GRAFT_LOG_ERROR, "staging " + a.path + " failed: " + graft_status_string(s == GRAFT_OK ? GRAFT_E_IO : s));
             t.journal.close();
+            make_tree_writable(t.dir);
             fs::remove_all(t.dir, ec);
             return s == GRAFT_OK ? GRAFT_E_IO : s;
         }
@@ -690,18 +702,20 @@ graft_status update_impl(const char *package_path, const char *root_dir, const g
         log(GRAFT_LOG_ERROR, std::string("update failed (") + graft_status_string(s) + "); rolling back");
         rollback(t, log);
         t.journal.close();
+        make_tree_writable(t.dir);
         fs::remove_all(t.dir, ec);
         return s;
     }
     t.journal.close();
+    make_tree_writable(t.dir);
     fs::remove_all(t.dir, ec);
-    if (ec) log(GRAFT_LOG_WARN, t.dir.string() + ": couldn't remove: " + ec.message());
+    if (ec) log(GRAFT_LOG_WARN, u8str(t.dir) + ": couldn't remove: " + ec.message());
     return GRAFT_OK;
 }
 
 graft_status describe_impl(const char *package_path, const Log &log) {
     Package pk;
-    if (graft_status s = open_package(package_path, pk, log); s != GRAFT_OK) return s;
+    if (graft_status s = open_package(u8path(package_path), pk, log); s != GRAFT_OK) return s;
     const Manifest &m = pk.m;
     std::string from;
     for (const auto &l : m.labels) from += (from.empty() ? "" : ", ") + l;

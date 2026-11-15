@@ -41,6 +41,15 @@ jobs:
       - run: cmake --build --preset ${{ matrix.preset }}
       - run: ctest --preset ${{ matrix.preset }}
 
+  windows:
+    name: windows-latest / msvc
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake --preset windows
+      - run: cmake --build --preset windows --parallel
+      - run: ctest --preset windows
+
   fuzz:
     name: fuzz (60s per target)
     runs-on: ubuntu-latest

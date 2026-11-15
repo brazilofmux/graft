@@ -28,6 +28,13 @@ struct TempDir {
     }
 };
 
+// Creating symlinks needs a privilege on Windows; tests skip those parts.
+bool try_symlink(const fs::path &target, const fs::path &link) {
+    std::error_code ec;
+    fs::create_symlink(target, link, ec);
+    return !ec;
+}
+
 void write(const fs::path &p, const std::string &data) {
     fs::create_directories(p.parent_path());
     std::ofstream(p, std::ios::binary) << data;
@@ -89,7 +96,7 @@ struct Releases {
         write(r[2] / "doc/new", "new");
         write(r[2] / "empty", "");
         fs::create_directories(r[2] / "var/empty-dir");
-        fs::create_symlink("app", r[2] / "bin/link");
+        try_symlink("app", r[2] / "bin/link");
         fs::permissions(r[2] / "bin/app", fs::perms::owner_exec, fs::perm_options::add);
     }
 };
@@ -121,7 +128,7 @@ TEST(archive_roundtrip) {
     graft_archive_version v;
     CHECK_EQ(graft_archive_get(a.a, 2, &v), GRAFT_OK);
     CHECK_EQ(std::string(v.label), std::string("v2"));
-    CHECK_EQ(v.file_count, 4u);  // bin/app, lib/shared, doc/new, empty
+    CHECK_EQ(v.file_count, 4u);  // bin/app, lib/shared, doc/new, empty (the link isn't a file)
 }
 
 TEST(archive_long_history_is_compact_and_exact) {

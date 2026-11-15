@@ -249,7 +249,7 @@ graft_status add_version(State &s, const std::string &label, uint64_t time, std:
         for (const auto &e : s.versions.back().entries)
             if (e.kind == kNodeFile) {
                 prev_path.emplace(e.path, e.object);
-                prev_name.emplace(fs::path(e.path).filename().string(), e.object);
+                prev_name.emplace(u8str(u8path(e.path).filename()), e.object);
             }
 
     const uint64_t first = s.objs.size();
@@ -290,7 +290,7 @@ graft_status add_version(State &s, const std::string &label, uint64_t time, std:
         std::vector<uint8_t> patch;
         uint64_t base = UINT64_MAX;
         if (auto p = prev_path.find(it.entry.path); p != prev_path.end()) base = p->second;
-        else if (auto q = prev_name.find(fs::path(it.entry.path).filename().string()); q != prev_name.end())
+        else if (auto q = prev_name.find(u8str(u8path(it.entry.path).filename())); q != prev_name.end())
             base = q->second;
         if (base != UINT64_MAX && s.objs[static_cast<size_t>(base)].depth < kDefaultDepth) {
             Content bc;
@@ -386,7 +386,7 @@ graft_status items_from_dir(const fs::path &dir, const Log &log, std::vector<Ite
         it.entry.link = n.link;
         it.hash = n.hash;
         it.size = n.size;
-        const fs::path full = dir / p;
+        const fs::path full = join(dir, p);
         it.fetch = [full](std::vector<uint8_t> &out) { return read_whole(full, out); };
         items.push_back(std::move(it));
     }
@@ -412,18 +412,23 @@ void set_mode(const fs::path &p, uint32_t mode, std::error_code &ec) {
 
 graft_status extract_into(State &s, const Version &v, const fs::path &dir) {
     std::error_code ec;
+    for (const auto &e : v.entries)
+        if (!platform_safe_path(e.path)) {
+            s.log(GRAFT_LOG_ERROR, e.path + ": this name can't be created on this platform");
+            return GRAFT_E_UNSUPPORTED;
+        }
     for (const auto &e : v.entries) {
-        const fs::path p = dir / e.path;
+        const fs::path p = join(dir, e.path);
         if (e.kind == kNodeDir) {
             if (!fs::create_directory(p, ec) || ec) return GRAFT_E_IO;
         } else if (e.kind == kNodeSymlink) {
-            fs::create_symlink(e.link, p, ec);
+            fs::create_symlink(u8path(e.link), p, ec);
             if (ec) return GRAFT_E_IO;
         } else {
             Content c;
             if (graft_status st = materialize(s, e.object, c); st != GRAFT_OK) return st;
             File out;
-            if (!out.open(p, "wbx")) return GRAFT_E_IO;
+            if (!out.create(p)) return GRAFT_E_IO;
             if (!c->empty() && std::fwrite(c->data(), 1, c->size(), out.get()) != c->size()) return GRAFT_E_IO;
             if (!out.close()) return GRAFT_E_IO;
             set_mode(p, e.mode, ec);
@@ -433,7 +438,7 @@ graft_status extract_into(State &s, const Version &v, const fs::path &dir) {
     // Directory modes last, deepest first, so a read-only directory can still be filled.
     for (auto it = v.entries.rbegin(); it != v.entries.rend(); ++it) {
         if (it->kind != kNodeDir) continue;
-        set_mode(dir / it->path, it->mode, ec);
+        set_mode(join(dir, it->path), it->mode, ec);
         if (ec) return GRAFT_E_IO;
     }
     return GRAFT_OK;
@@ -448,12 +453,12 @@ graft_status extract(State &s, const std::string &label, const fs::path &dir) {
     }
     std::error_code ec;
     if (fs::symlink_status(dir, ec).type() != fs::file_type::not_found) {
-        s.log(GRAFT_LOG_ERROR, dir.string() + ": already exists");
+        s.log(GRAFT_LOG_ERROR, u8str(dir) + ": already exists");
         return GRAFT_E_INVALID_ARG;
     }
-    const fs::path tmp = dir.string() + ".graft-tmp";
+    const fs::path tmp = u8path(u8str(dir) + ".graft-tmp");
     if (!fs::create_directory(tmp, ec) || ec) {
-        s.log(GRAFT_LOG_ERROR, tmp.string() + ": can't create (left over from an earlier run?)");
+        s.log(GRAFT_LOG_ERROR, u8str(tmp) + ": can't create (left over from an earlier run?)");
         return GRAFT_E_IO;
     }
     graft_status st = extract_into(s, *v, tmp);
@@ -462,11 +467,7 @@ graft_status extract(State &s, const std::string &label, const fs::path &dir) {
         if (ec) st = GRAFT_E_IO;
     }
     if (st != GRAFT_OK) {
-        // Read-only directories would block removal; open them up first.
-        for (auto it = fs::recursive_directory_iterator(tmp, ec); !ec && it != fs::recursive_directory_iterator();
-             it.increment(ec))
-            if (it->is_directory() && !it->is_symlink()) fs::permissions(it->path(), fs::perms::owner_all, fs::perm_options::add, ec);
-        fs::permissions(tmp, fs::perms::owner_all, fs::perm_options::add, ec);
+        make_tree_writable(tmp);  // read-only files or directories would block removal
         fs::remove_all(tmp, ec);
     }
     return st;
@@ -503,7 +504,7 @@ graft_status open_impl(const char *path, uint32_t flags, graft_log_fn log, void 
     namespace fs = std::filesystem;
     auto a = std::make_unique<graft_archive>();
     auto &s = a->s;
-    s.path = path;
+    s.path = graft::u8path(path);
     s.log = graft::Log(log, log_ctx);
     s.writable = (flags & (GRAFT_ARCHIVE_WRITE | GRAFT_ARCHIVE_CREATE)) != 0;
     std::error_code ec;
@@ -513,7 +514,7 @@ graft_status open_impl(const char *path, uint32_t flags, graft_log_fn log, void 
             return GRAFT_E_IO;
         }
         graft::File f;
-        if (!f.open(s.path, "wbx")) return GRAFT_E_IO;
+        if (!f.create(s.path)) return GRAFT_E_IO;
         uint8_t hdr[graft::arc::kHeaderSize];
         std::memcpy(hdr, graft::arc::kMagic, 8);
         graft::put_le<uint16_t>(hdr + 8, graft::arc::kVersion);
@@ -567,14 +568,14 @@ extern "C" graft_status graft_archive_add(graft_archive *a, const char *dir, con
     if (!a->s.writable) return GRAFT_E_INVALID_ARG;
     return guarded([&] {
         std::vector<graft::arc::Item> items;
-        if (graft_status st = graft::arc::items_from_dir(dir, a->s.log, items); st != GRAFT_OK) return st;
+        if (graft_status st = graft::arc::items_from_dir(graft::u8path(dir), a->s.log, items); st != GRAFT_OK) return st;
         return graft::arc::add_version(a->s, label, graft::arc::now(), items, level);
     });
 }
 
 extern "C" graft_status graft_archive_extract(graft_archive *a, const char *label, const char *dir) {
     if (!a || !label || !dir) return GRAFT_E_INVALID_ARG;
-    return guarded([&] { return graft::arc::extract(a->s, label, dir); });
+    return guarded([&] { return graft::arc::extract(a->s, label, graft::u8path(dir)); });
 }
 
 extern "C" graft_status graft_archive_diff(graft_archive *a, const char *from, const char *to) {
@@ -637,8 +638,9 @@ extern "C" graft_status graft_archive_mkpatch(graft_archive *a, const char *to, 
         if (graft_status st = graft::arc::extract(s, to, work / "to"); st != GRAFT_OK) return st;
         std::vector<std::string> dirs;
         for (size_t i = 0; i < froms.size(); ++i) {
-            dirs.push_back((work / ("from" + std::to_string(i))).string());
-            if (graft_status st = graft::arc::extract(s, froms[i], dirs.back()); st != GRAFT_OK) return st;
+            dirs.push_back(graft::u8str(work / ("from" + std::to_string(i))));
+            if (graft_status st = graft::arc::extract(s, froms[i], graft::u8path(dirs.back())); st != GRAFT_OK)
+                return st;
         }
         std::vector<const char *> dp, lp;
         for (size_t i = 0; i < froms.size(); ++i) {
@@ -655,7 +657,7 @@ extern "C" graft_status graft_archive_mkpatch(graft_archive *a, const char *to, 
             o.log = s.log.fn();
             o.log_ctx = s.log.ctx();
         }
-        return graft_pack((work / "to").string().c_str(), to, dp.data(), lp.data(), dp.size(), out_path, &o);
+        return graft_pack(graft::u8str(work / "to").c_str(), to, dp.data(), lp.data(), dp.size(), out_path, &o);
     });
 }
 
@@ -677,7 +679,7 @@ extern "C" graft_status graft_archive_prune(const char *path, const char *const 
         const std::string tmp = std::string(path) + ".graft-tmp";
         graft_archive *dst = nullptr;
         std::error_code ec;
-        if (fs::exists(tmp, ec)) {
+        if (fs::exists(graft::u8path(tmp), ec)) {
             src->s.log(GRAFT_LOG_ERROR, tmp + ": already exists (left over from an earlier run?)");
             return GRAFT_E_IO;
         }
@@ -689,7 +691,7 @@ extern "C" graft_status graft_archive_prune(const char *path, const char *const 
             bool keep = false;
             ~Cleanup() {
                 std::error_code e;
-                if (!keep) fs::remove(p, e);
+                if (!keep) fs::remove(graft::u8path(p), e);
             }
         } cleanup{tmp};
 
@@ -720,7 +722,7 @@ extern "C" graft_status graft_archive_prune(const char *path, const char *const 
         }
         dg.reset();
         sg.reset();
-        fs::rename(tmp, path, ec);
+        fs::rename(graft::u8path(tmp), graft::u8path(path), ec);
         if (ec) return GRAFT_E_IO;
         cleanup.keep = true;
         return GRAFT_OK;

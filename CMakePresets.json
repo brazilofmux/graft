@@ -1,31 +1,44 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": { "GRAFT_WERROR": "ON" }
+      "cacheVariables": {
+        "GRAFT_WERROR": "ON"
+      }
     },
     {
       "name": "dev",
       "displayName": "Debug, warnings as errors",
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     },
     {
       "name": "release",
       "displayName": "Optimized with debug info",
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
     },
     {
       "name": "asan",
       "displayName": "Debug + AddressSanitizer + UBSan",
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "GRAFT_SANITIZE": "ON" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "GRAFT_SANITIZE": "ON"
+      }
     },
     {
       "name": "fuzz",
@@ -45,7 +58,11 @@
       "displayName": "libFuzzer targets (Homebrew LLVM; Apple clang lacks libFuzzer)",
       "inherits": "fuzz",
       "binaryDir": "${sourceDir}/build/fuzz",
-      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
       "cacheVariables": {
         "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
         "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++"
@@ -55,21 +72,93 @@
       "name": "fetch",
       "displayName": "Debug, download all deps (as on a clean machine)",
       "inherits": "dev",
-      "cacheVariables": { "GRAFT_DEPS": "fetch" }
+      "cacheVariables": {
+        "GRAFT_DEPS": "fetch"
+      }
+    },
+    {
+      "name": "windows",
+      "displayName": "Windows: Visual Studio, static runtime, dependencies downloaded",
+      "binaryDir": "${sourceDir}/build/windows",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "GRAFT_DEPS": "fetch",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+        "CMAKE_POLICY_DEFAULT_CMP0091": "NEW"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "dev",        "configurePreset": "dev" },
-    { "name": "release",    "configurePreset": "release" },
-    { "name": "asan",       "configurePreset": "asan" },
-    { "name": "fuzz",       "configurePreset": "fuzz" },
-    { "name": "fuzz-macos", "configurePreset": "fuzz-macos" },
-    { "name": "fetch",      "configurePreset": "fetch" }
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz"
+    },
+    {
+      "name": "fuzz-macos",
+      "configurePreset": "fuzz-macos"
+    },
+    {
+      "name": "fetch",
+      "configurePreset": "fetch"
+    },
+    {
+      "name": "windows",
+      "configurePreset": "windows",
+      "configuration": "Release"
+    }
   ],
   "testPresets": [
-    { "name": "dev",     "configurePreset": "dev",     "output": { "outputOnFailure": true } },
-    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
-    { "name": "asan",    "configurePreset": "asan",    "output": { "outputOnFailure": true } },
-    { "name": "fetch",   "configurePreset": "fetch",   "output": { "outputOnFailure": true } }
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "fetch",
+      "configurePreset": "fetch",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows",
+      "configurePreset": "windows",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }

@@ -29,6 +29,13 @@ struct TempDir {
     }
 };
 
+// Creating symlinks needs a privilege on Windows; tests skip those parts.
+bool try_symlink(const fs::path &target, const fs::path &link) {
+    std::error_code ec;
+    fs::create_symlink(target, link, ec);
+    return !ec;
+}
+
 void write(const fs::path &p, const std::string &data) {
     fs::create_directories(p.parent_path());
     std::ofstream(p, std::ios::binary) << data;
@@ -87,7 +94,7 @@ struct Fixture {
         write(v3 / "thing/inside", "now a directory");
         write(v3 / "doc/new.txt", "new docs");
         write(v3 / "share/deep/x", "x");
-        fs::create_symlink("app", v3 / "bin/app-link");
+        try_symlink("app", v3 / "bin/app-link");
         fs::permissions(v3 / "bin/app", fs::perms::owner_exec, fs::perm_options::add);
         fs::permissions(v3 / "lib/same", fs::perms::group_write, fs::perm_options::add);
     }
@@ -193,6 +200,7 @@ TEST(package_conflicts_change_nothing) {
 TEST(package_refuses_symlinked_parent) {
     Fixture f;
     CHECK_EQ(f.pack(), GRAFT_OK);
+    if (!try_symlink("x", f.tmp.path / "probe")) return;  // no symlinks here
     const fs::path inst = f.install(f.v1, "i");
     const fs::path outside = f.tmp.path / "outside";
     fs::rename(inst / "lib", outside);

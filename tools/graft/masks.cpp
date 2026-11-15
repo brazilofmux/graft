@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <optional>
@@ -188,7 +189,7 @@ bool resolve_mask(const std::string &spec, const uint8_t *oldp, size_t oldn, con
 }
 
 bool read_mask_file(const char *path, std::vector<std::string> &specs, std::string &err) {
-    std::ifstream f(path);
+    std::ifstream f(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(path))));
     if (!f) {
         err = std::string(path) + ": " + std::strerror(errno);
         return false;

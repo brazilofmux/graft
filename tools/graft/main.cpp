@@ -14,15 +14,58 @@
 #include <string_view>
 #include <vector>
 
-#if defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
+#include <sys/stat.h>
+
+#if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#  include <shellapi.h>
+#  include <io.h>
+#elif defined(__unix__) || defined(__APPLE__)
 #  define GRAFT_HAVE_MMAP 1
-#  include <fcntl.h>
 #  include <sys/mman.h>
-#  include <sys/stat.h>
 #  include <unistd.h>
 #endif
 
 namespace {
+
+// Paths on the command line are UTF-8 (on Windows, main converts the wide
+// command line). These open them without the ANSI code page.
+std::filesystem::path upath(const char *utf8) {
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(utf8)));
+}
+
+std::FILE *open_file(const char *utf8, const char *mode) {
+#if defined(_WIN32)
+    wchar_t wmode[8] = {};
+    for (size_t i = 0; mode[i] && i < 7; ++i) wmode[i] = static_cast<wchar_t>(mode[i]);
+    return _wfopen(upath(utf8).c_str(), wmode);
+#else
+    return std::fopen(utf8, mode);
+#endif
+}
+
+// A new file for writing; fails if it already exists.
+std::FILE *create_file(const char *utf8) {
+#if defined(_WIN32)
+    const int fd = _wopen(upath(utf8).c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+    if (fd < 0) return nullptr;
+    std::FILE *f = _fdopen(fd, "wb");
+    if (!f) _close(fd);
+#else
+    const int fd = ::open(utf8, O_WRONLY | O_CREAT | O_EXCL, 0666);
+    if (fd < 0) return nullptr;
+    std::FILE *f = fdopen(fd, "wb");
+    if (!f) ::close(fd);
+#endif
+    return f;
+}
 
 constexpr int kExitOk = 0;
 constexpr int kExitFail = 1;
@@ -113,7 +156,7 @@ public:
         ::close(fd);
         return true;
 #else
-        std::FILE *f = std::fopen(path, "rb");
+        std::FILE *f = open_file(path, "rb");
         if (!f) return false;
         uint8_t buf[1 << 16];
         size_t n;
@@ -159,11 +202,13 @@ public:
     explicit OutputFile(std::string path) : path_(std::move(path)), tmp_(path_ + ".graft-tmp") {}
     ~OutputFile() {
         if (f_) std::fclose(f_);
-        if (!committed_) std::remove(tmp_.c_str());
+        std::error_code ec;
+        if (!committed_ && opened_) std::filesystem::remove(upath(tmp_.c_str()), ec);
     }
     bool open() {
-        f_ = std::fopen(tmp_.c_str(), "wbx");  // exclusive: never clobber a stray temp
-        return f_ != nullptr;
+        f_ = create_file(tmp_.c_str());  // exclusive: never clobber a stray temp
+        opened_ = f_ != nullptr;
+        return opened_;
     }
     std::FILE *file() const { return f_; }
     const std::string &tmp_path() const { return tmp_; }
@@ -171,7 +216,10 @@ public:
         const bool ok = std::fflush(f_) == 0 && !std::ferror(f_);
         std::fclose(f_);
         f_ = nullptr;
-        if (!ok || std::rename(tmp_.c_str(), path_.c_str()) != 0) return false;
+        // std::filesystem::rename replaces an existing file on Windows too.
+        std::error_code ec;
+        if (ok) std::filesystem::rename(upath(tmp_.c_str()), upath(path_.c_str()), ec);
+        if (!ok || ec) return false;
         committed_ = true;
         return true;
     }
@@ -180,6 +228,7 @@ private:
     std::string path_, tmp_;
     std::FILE *f_ = nullptr;
     bool committed_ = false;
+    bool opened_ = false;  // never remove a temp file someone else left
 };
 
 // --- commands ------------------------------------------------------------------
@@ -285,7 +334,7 @@ int cmd_diff(int argc, char **argv) {
 int run_apply(const char *old_path, const char *patch_path, const char *new_path) {
     InputFile oldf;
     if (!oldf.open(old_path)) return fail_errno(old_path);
-    std::FILE *pf = std::strcmp(patch_path, "-") == 0 ? stdin : std::fopen(patch_path, "rb");
+    std::FILE *pf = std::strcmp(patch_path, "-") == 0 ? stdin : open_file(patch_path, "rb");
     if (!pf) return fail_errno(patch_path);
     std::unique_ptr<std::FILE, int (*)(std::FILE *)> pf_guard(pf == stdin ? nullptr : pf, std::fclose);
 
@@ -602,7 +651,7 @@ int cmd_archive(int argc, char **argv) {
             content += v.total_size;
         }
         std::error_code ec;
-        const auto size = std::filesystem::file_size(pos[0], ec);
+        const auto size = std::filesystem::file_size(upath(pos[0]), ec);
         std::printf("%zu versions, %llu bytes of content in a %llu-byte archive\n", graft_archive_count(ar.get()),
                     static_cast<unsigned long long>(content), static_cast<unsigned long long>(size));
         return kExitOk;
@@ -672,7 +721,7 @@ int cmd_archive(int argc, char **argv) {
 }
 
 int cmd_info(const char *path) {
-    std::FILE *f = std::fopen(path, "rb");
+    std::FILE *f = open_file(path, "rb");
     if (!f) return fail_errno(path);
     graft_reader rd{f, file_read};
     graft_patch_info info;
@@ -698,7 +747,7 @@ struct HasherDeleter {
 
 int hash_one(const char *path) {
     const bool is_stdin = std::strcmp(path, "-") == 0;
-    std::FILE *f = is_stdin ? stdin : std::fopen(path, "rb");
+    std::FILE *f = is_stdin ? stdin : open_file(path, "rb");
     if (!f) return fail_errno(path);
     graft_hasher *raw = nullptr;
     if (graft_hasher_new(&raw) != GRAFT_OK) {
@@ -721,7 +770,34 @@ int hash_one(const char *path) {
 
 }  // namespace
 
-int main(int argc, char **argv) {
+int run(int argc, char **argv);
+
+#if defined(_WIN32)
+// Windows hands main() its arguments in the ANSI code page; take the wide
+// command line instead and convert it to UTF-8, which graft uses throughout.
+int main() {
+    int n = 0;
+    LPWSTR *w = CommandLineToArgvW(GetCommandLineW(), &n);
+    if (!w) return kExitFail;
+    std::vector<std::string> args;
+    for (int i = 0; i < n; ++i) {
+        const int len = WideCharToMultiByte(CP_UTF8, 0, w[i], -1, nullptr, 0, nullptr, nullptr);
+        std::string a(static_cast<size_t>(len > 0 ? len - 1 : 0), '\0');
+        if (len > 1) WideCharToMultiByte(CP_UTF8, 0, w[i], -1, a.data(), len, nullptr, nullptr);
+        args.push_back(std::move(a));
+    }
+    LocalFree(w);
+    std::vector<char *> argv;
+    for (auto &a : args) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    SetConsoleOutputCP(CP_UTF8);
+    return run(n, argv.data());
+}
+#else
+int main(int argc, char **argv) { return run(argc, argv); }
+#endif
+
+int run(int argc, char **argv) {
     if (argc < 2) {
         usage(stderr);
         return kExitUsage;

@@ -54,6 +54,9 @@ else()
   set(ZSTD_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
   set(ZSTD_BUILD_STATIC   ON  CACHE BOOL "" FORCE)
   set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
+  if(MSVC)
+    set(ZSTD_USE_STATIC_RUNTIME ON CACHE BOOL "" FORCE)  # match CMAKE_MSVC_RUNTIME_LIBRARY in the windows preset
+  endif()
   FetchContent_Declare(graft_zstd
     URL ${GRAFT_ZSTD_URL} URL_HASH SHA256=${GRAFT_ZSTD_SHA256}
     SOURCE_SUBDIR build/cmake

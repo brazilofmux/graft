@@ -72,7 +72,7 @@ struct Builder {
             return GRAFT_OK;
         }
         std::vector<uint8_t> data, comp;
-        if (graft_status s = read_whole(new_root / path, data); s != GRAFT_OK) return s;
+        if (graft_status s = read_whole(join(new_root, path), data); s != GRAFT_OK) return s;
         comp.resize(ZSTD_compressBound(data.size()));
         const size_t c = ZSTD_compress(comp.data(), comp.size(), data.data(), data.size(), opts.level);
         if (ZSTD_isError(c)) return GRAFT_E_NOMEM;
@@ -88,8 +88,8 @@ struct Builder {
     graft_status delta_blob(size_t v, const std::string &src, const std::string &path, uint64_t &idx,
                             Regions &regions) {
         std::vector<uint8_t> oldb, newb;
-        if (graft_status s = read_whole(old_roots[v] / src, oldb); s != GRAFT_OK) return s;
-        if (graft_status s = read_whole(new_root / path, newb); s != GRAFT_OK) return s;
+        if (graft_status s = read_whole(join(old_roots[v], src), oldb); s != GRAFT_OK) return s;
+        if (graft_status s = read_whole(join(new_root, path), newb); s != GRAFT_OK) return s;
 
         std::vector<graft_mask> masks(64);
         size_t nmasks = 0;
@@ -177,7 +177,7 @@ struct Builder {
             } else if (auto h = by_hash[v].find(n.hash); h != by_hash[v].end()) {
                 src = h->second;
                 src_hash = n.hash;
-            } else if (auto nm = by_name[v].find(fs::path(path).filename().string()); nm != by_name[v].end()) {
+            } else if (auto nm = by_name[v].find(u8str(u8path(path).filename())); nm != by_name[v].end()) {
                 src = nm->second;
                 src_hash = olds[v].at(src).hash;
             }
@@ -217,7 +217,7 @@ struct Builder {
         }
         if (!needed) return GRAFT_OK;
         std::vector<uint8_t> data;
-        if (graft_status s = read_whole(new_root / path, data); s != GRAFT_OK) return s;
+        if (graft_status s = read_whole(join(new_root, path), data); s != GRAFT_OK) return s;
         hash_bytes(data.data(), data.size(), e.regions, e.current);
         m.entries.push_back(std::move(e));
         return GRAFT_OK;
@@ -230,7 +230,7 @@ struct Builder {
             for (const auto &[p, n] : olds[v]) {
                 if (n.kind != kFile || owned(p)) continue;  // never patch from a user's file
                 by_hash[v].emplace(n.hash, p);  // first path wins (sorted)
-                by_name[v].emplace(fs::path(p).filename().string(), p);
+                by_name[v].emplace(u8str(u8path(p).filename()), p);
             }
         }
 
@@ -315,11 +315,11 @@ graft_status pack_impl(const char *new_dir, const char *new_label, const char *c
                        const char *const *old_labels, size_t old_count, const char *out_path,
                        const graft_pack_options &opts) {
     Log log(opts.log, opts.log_ctx);
-    const fs::path out_final(out_path);
-    const fs::path out_tmp = out_final.string() + ".graft-tmp";
+    const fs::path out_final = u8path(out_path);
+    const fs::path out_tmp = u8path(std::string(out_path) + ".graft-tmp");
     File f;
-    if (!f.open(out_tmp, "wbx")) {
-        log(GRAFT_LOG_ERROR, out_tmp.string() + ": can't create (left over from an earlier run?)");
+    if (!f.create(out_tmp)) {
+        log(GRAFT_LOG_ERROR, u8str(out_tmp) + ": can't create (left over from an earlier run?)");
         return GRAFT_E_IO;
     }
     struct Cleanup {
@@ -332,14 +332,14 @@ graft_status pack_impl(const char *new_dir, const char *new_label, const char *c
     } cleanup{out_tmp};
 
     HashingFile out(f.get());
-    Builder b{opts, log, out, {}, {}, {}, {}, new_dir, {}, {}, {}};
+    Builder b{opts, log, out, {}, {}, {}, {}, u8path(new_dir), {}, {}, {}};
     b.m.target_label = new_label ? new_label : "";
-    if (graft_status s = scan(new_dir, b.nw, log); s != GRAFT_OK) return s;
+    if (graft_status s = scan(b.new_root, b.nw, log); s != GRAFT_OK) return s;
     for (size_t i = 0; i < old_count; ++i) {
-        b.old_roots.emplace_back(old_dirs[i]);
+        b.old_roots.push_back(u8path(old_dirs[i]));
         b.m.labels.emplace_back(old_labels && old_labels[i] ? old_labels[i] : old_dirs[i]);
         b.olds.emplace_back();
-        if (graft_status s = scan(old_dirs[i], b.olds.back(), log); s != GRAFT_OK) return s;
+        if (graft_status s = scan(b.old_roots.back(), b.olds.back(), log); s != GRAFT_OK) return s;
     }
 
     uint8_t hdr[kHeaderSize];

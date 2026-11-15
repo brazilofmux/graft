@@ -30,6 +30,13 @@ option(GRAFT_SLOW32_TEST "Add a test that builds graft-apply for SLOW-32 and run
 include(cmake/Warnings.cmake)
 include(cmake/Deps.cmake)
 
+if(MSVC)
+  # Our code only (the dependencies were added above). Sources are UTF-8;
+  # the CRT's "use the _s functions" warnings don't apply to portable code.
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
+  add_compile_options(/utf-8)
+endif()
+
 if(GRAFT_SANITIZE OR GRAFT_FUZZ)
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined)
   add_link_options(-fsanitize=address,undefined)

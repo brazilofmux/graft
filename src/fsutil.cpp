@@ -5,7 +5,19 @@
 #include <algorithm>
 #include <cstring>
 
-#if defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
+#include <sys/stat.h>
+
+#if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#  include <io.h>
+#elif defined(__unix__) || defined(__APPLE__)
 #  include <unistd.h>
 #endif
 
@@ -13,8 +25,91 @@ namespace graft {
 
 bool File::open(const fs::path &p, const char *mode) {
     close();
-    f_ = std::fopen(p.string().c_str(), mode);
+#if defined(_WIN32)
+    wchar_t wmode[8] = {};
+    for (size_t i = 0; mode[i] && i < 7; ++i) wmode[i] = static_cast<wchar_t>(mode[i]);
+    f_ = _wfopen(p.c_str(), wmode);
+#else
+    f_ = std::fopen(p.c_str(), mode);
+#endif
     return f_ != nullptr;
+}
+
+bool File::create(const fs::path &p) {
+    close();
+#if defined(_WIN32)
+    const int fd = _wopen(p.c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+    if (fd < 0) return false;
+    f_ = _fdopen(fd, "wb");
+    if (!f_) _close(fd);
+#else
+    const int fd = ::open(p.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0666);
+    if (fd < 0) return false;
+    f_ = fdopen(fd, "wb");
+    if (!f_) ::close(fd);
+#endif
+    return f_ != nullptr;
+}
+
+fs::path u8path(const std::string &s) {
+    return fs::path(std::u8string(reinterpret_cast<const char8_t *>(s.data()), s.size()));
+}
+
+std::string u8str(const fs::path &p) {
+    const std::u8string u = p.generic_u8string();
+    return std::string(reinterpret_cast<const char *>(u.data()), u.size());
+}
+
+bool platform_safe_path(const std::string &rel) {
+#if defined(_WIN32)
+    size_t start = 0;
+    while (start <= rel.size()) {
+        size_t slash = rel.find('/', start);
+        if (slash == std::string::npos) slash = rel.size();
+        const std::string comp = rel.substr(start, slash - start);
+        start = slash + 1;
+        if (comp.empty()) continue;
+        if (comp.find_first_of("<>\"|?*") != std::string::npos) return false;
+        if (comp.back() == '.' || comp.back() == ' ') return false;
+        std::string base = comp.substr(0, comp.find('.'));
+        while (!base.empty() && base.back() == ' ') base.pop_back();
+        for (char &c : base)
+            if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+        if (base == "CON" || base == "PRN" || base == "AUX" || base == "NUL") return false;
+        if (base.size() == 4 && (base.rfind("COM", 0) == 0 || base.rfind("LPT", 0) == 0) && base[3] >= '1' &&
+            base[3] <= '9')
+            return false;
+    }
+#else
+    (void)rel;
+#endif
+    return true;
+}
+
+bool file_in_use(const fs::path &p) {
+#if defined(_WIN32)
+    HANDLE h = CreateFileW(p.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        const DWORD e = GetLastError();
+        return e == ERROR_SHARING_VIOLATION || e == ERROR_LOCK_VIOLATION;
+    }
+    CloseHandle(h);
+#else
+    (void)p;
+#endif
+    return false;
+}
+
+void make_tree_writable(const fs::path &dir) {
+    std::error_code ec;
+    fs::permissions(dir, fs::perms::owner_all, fs::perm_options::add, ec);
+    for (auto it = fs::recursive_directory_iterator(dir, ec); !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+        std::error_code e2;
+        if (!it->is_symlink(e2)) fs::permissions(it->path(), fs::perms::owner_write, fs::perm_options::add, e2);
+        if (it->is_directory(e2) && !it->is_symlink(e2))
+            fs::permissions(it->path(), fs::perms::owner_all, fs::perm_options::add, e2);
+    }
 }
 
 bool File::close() {
@@ -88,7 +183,9 @@ void hash_bytes(const uint8_t *p, size_t n, const Regions &zeroed, Hash &out) {
 
 graft_status sync_file(std::FILE *f) {
     if (std::fflush(f) != 0) return GRAFT_E_IO;
-#if defined(__unix__) || defined(__APPLE__)
+#if defined(_WIN32)
+    if (_commit(_fileno(f)) != 0) return GRAFT_E_IO;
+#elif defined(__unix__) || defined(__APPLE__)
     if (fsync(fileno(f)) != 0) return GRAFT_E_IO;
 #endif
     return GRAFT_OK;

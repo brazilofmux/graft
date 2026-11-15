@@ -13,7 +13,7 @@ uint32_t file_mode(const fs::file_status &st) {
 graft_status scan_tree(const fs::path &root, Tree &tree, const Log &log) {
     std::error_code ec;
     if (!fs::is_directory(root, ec)) {
-        log(GRAFT_LOG_ERROR, root.string() + ": not a directory");
+        log(GRAFT_LOG_ERROR, u8str(root) + ": not a directory");
         return GRAFT_E_INVALID_ARG;
     }
     fs::recursive_directory_iterator it(root, fs::directory_options::none, ec), end;
@@ -21,7 +21,7 @@ graft_status scan_tree(const fs::path &root, Tree &tree, const Log &log) {
     for (; it != end; it.increment(ec)) {
         if (ec) return GRAFT_E_IO;
         const fs::path &p = it->path();
-        const std::string rel = p.lexically_relative(root).generic_string();
+        const std::string rel = u8str(p.lexically_relative(root));
         if (rel == kTxnDir) {
             it.disable_recursion_pending();
             continue;
@@ -35,7 +35,7 @@ graft_status scan_tree(const fs::path &root, Tree &tree, const Log &log) {
         Node n;
         if (fs::is_symlink(st)) {
             n.kind = kNodeSymlink;
-            n.link = fs::read_symlink(p, ec).generic_string();
+            n.link = u8str(fs::read_symlink(p, ec));
             if (ec) return GRAFT_E_IO;
         } else if (fs::is_directory(st)) {
             n.kind = kNodeDir;
