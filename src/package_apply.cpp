@@ -195,6 +195,12 @@ struct Planner {
 
     void conflict(const std::string &p, const std::string &why) { conflicts.push_back(p + ": " + why); }
 
+    // A file the plan couldn't read: say why, when the reason is another program.
+    void unreadable(const std::string &p) {
+        conflict(p, file_in_use(join(root, p)) ? std::string(kInUse) : std::string("can't read"));
+    }
+    static constexpr const char *kInUse = "in use by another program; stop it and try again";
+
     bool ensure_parents(const std::string &p) {
         std::vector<std::string> missing;
         for (std::string d = parent_of(p); !d.empty(); d = parent_of(d)) {
@@ -241,7 +247,7 @@ struct Planner {
         }
         if (e.what == kFile) {
             Hash h;
-            if (hash_file(join(root, e.path), {}, h) != GRAFT_OK) return conflict(e.path, "can't read");
+            if (hash_file(join(root, e.path), {}, h) != GRAFT_OK) return unreadable(e.path);
             if (std::find(e.known_hashes.begin(), e.known_hashes.end(), h) == e.known_hashes.end()) {
                 if (!recreated) conflict(e.path, "modified locally; not removing it");
                 return;
@@ -314,7 +320,7 @@ struct Planner {
         if (st.kind == Kind::File) {
             Hash h;
             uint64_t size = 0;
-            if (hash_file(join(root, e.path), e.regions, h, &size) != GRAFT_OK) return conflict(e.path, "can't read");
+            if (hash_file(join(root, e.path), e.regions, h, &size) != GRAFT_OK) return unreadable(e.path);
             if (size == e.size && h == e.current) {
                 if (kModesSupported && mode_of(join(root, e.path)) != e.mode)
                     actions.push_back({Action::Chmod, e.path, e.mode});
@@ -357,7 +363,7 @@ struct Planner {
         for (const auto &a : actions)
             if ((a.type == Action::Remove || (a.type == Action::Install && a.replace)) &&
                 file_in_use(join(root, a.path)))
-                conflict(a.path, "in use by another program; stop it and try again");
+                conflict(a.path, kInUse);
     }
 
     std::string describe(const Action &a) const {
