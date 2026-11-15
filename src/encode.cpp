@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <memory>
 #include <new>
+#include <stdexcept>
 #include <vector>
 
 namespace graft {
