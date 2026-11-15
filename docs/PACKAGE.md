@@ -41,6 +41,7 @@ blob in the file, between the header and the manifest.
 | 1 dir | `mode:uv` | make this directory |
 | 2 symlink | `link:str n:uv known:str[n]` | make this symlink, possibly replacing one pointing at a `known` target |
 | 3 remove | `what:u8` then, for a file, `n:uv hash[32][n]`; for a symlink, `n:uv link:str[n]`; for a directory, nothing | remove this, if it's one of the known contents |
+| 4 seed | as a file entry, with no masked regions and exactly one recipe, a full copy | a **user-owned** file (configuration, data): install it only if the path is absent |
 
 ```
 recipe   := kind:u8 [source_path:str if kind = 0] blob:uv n:uv label:uv[n]
@@ -69,7 +70,9 @@ recipe   := kind:u8 [source_path:str if kind = 0] blob:uv n:uv label:uv[n]
    changes yet. A file to patch must match one recipe's source hash. A file
    or symlink to remove must have known contents. No path may pass through a
    symlink or a non-directory. Any mismatch is a *conflict*, and the update
-   stops. Paths the package doesn't mention are never touched.
+   stops. Paths the package doesn't mention are never touched, and neither
+   is an existing user-owned (seed) file: it's never read, compared,
+   changed or removed, so it can't cause a conflict.
 2. **Stage.** Every new file and symlink is built under `.graft-txn/stage`
    and checked against `size` and `current`.
 3. **Commit.** Each step is recorded in `.graft-txn/journal` and synced

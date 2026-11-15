@@ -64,6 +64,11 @@ graft update --dry-run update.gfp /opt/app      # show the plan; change nothing
 graft update update.gfp /opt/app                # conflicts stop it before any change
 ```
 
+Files that ship once and then belong to the user (configuration,
+databases, customizable text) are marked `--user "game/*.conf"`: an update
+installs them only where they're missing, and never changes, removes or
+checks them.
+
 Versioned archives keep every release in one append-only file and can
 produce a package from any of them ([docs/ARCHIVE.md](docs/ARCHIVE.md)):
 

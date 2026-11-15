@@ -128,6 +128,29 @@ struct Builder {
         return GRAFT_OK;
     }
 
+    bool owned(const std::string &path) const {
+        return opts.user_owned && opts.user_owned(opts.user_ctx, path.c_str()) != 0;
+    }
+
+    // A user-owned file: one full copy, installed only where it's missing.
+    graft_status seed_entry(const std::string &path, const Node &n) {
+        Entry e;
+        e.path = path;
+        e.kind = kSeed;
+        e.mode = n.mode;
+        e.size = n.size;
+        e.current = n.hash;
+        Recipe r;
+        r.kind = kFull;
+        if (graft_status s = full_blob(path, n, r.blob); s != GRAFT_OK) return s;
+        for (size_t v = 0; v < olds.size(); ++v)
+            if (!olds[v].count(path)) r.labels.push_back(v);
+        e.recipes.push_back(std::move(r));
+        log(GRAFT_LOG_INFO, "seed   " + path + " (user-owned: installed only where missing)");
+        m.entries.push_back(std::move(e));
+        return GRAFT_OK;
+    }
+
     graft_status file_entry(const std::string &path, const Node &n) {
         Entry e;
         e.path = path;
@@ -205,7 +228,7 @@ struct Builder {
             by_hash.emplace_back();
             by_name.emplace_back();
             for (const auto &[p, n] : olds[v]) {
-                if (n.kind != kFile) continue;
+                if (n.kind != kFile || owned(p)) continue;  // never patch from a user's file
                 by_hash[v].emplace(n.hash, p);  // first path wins (sorted)
                 by_name[v].emplace(fs::path(p).filename().string(), p);
             }
@@ -225,6 +248,7 @@ struct Builder {
         std::map<std::string, Entry> removals;
         for (const auto &old : olds) {
             for (const auto &[p, n] : old) {
+                if (owned(p)) continue;  // the user's to keep
                 const auto it = nw.find(p);
                 if (it != nw.end() && it->second.kind == n.kind) continue;
                 Entry &e = removals[p];
@@ -245,7 +269,9 @@ struct Builder {
         }
 
         for (const auto &[p, n] : nw) {
-            if (n.kind == kFile) {
+            if (n.kind == kFile && owned(p)) {
+                if (graft_status s = seed_entry(p, n); s != GRAFT_OK) return s;
+            } else if (n.kind == kFile) {
                 if (graft_status s = file_entry(p, n); s != GRAFT_OK) return s;
             } else if (n.kind == kDir) {
                 bool needed = false;
@@ -365,6 +391,8 @@ extern "C" void graft_pack_options_init(graft_pack_options *o) {
     o->log_ctx = nullptr;
     o->filter_for = nullptr;
     o->filter_ctx = nullptr;
+    o->user_owned = nullptr;
+    o->user_ctx = nullptr;
 }
 
 extern "C" graft_status graft_pack(const char *new_dir, const char *new_label, const char *const *old_dirs,

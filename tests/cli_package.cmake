@@ -14,6 +14,9 @@ file(WRITE "${WORK}/r2/etc/old.conf" "old")
 file(WRITE "${WORK}/r3/bin/tool"     "${code}v3v2SERIAL:00000000${code}more")
 file(WRITE "${WORK}/r3/etc/new.conf" "new")
 file(WRITE "${WORK}/r3/share/readme" "hello")
+foreach(rel r1 r2 r3)
+  file(WRITE "${WORK}/${rel}/etc/site.conf" "default for ${rel}")  # user-owned
+endforeach()
 
 function(run expect_ok)
   execute_process(COMMAND ${ARGN} RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
@@ -32,7 +35,7 @@ function(expect_same a b)
   endif()
 endfunction()
 
-run(TRUE "${GRAFT}" pack -l 9 --label 3.0 --mask "bin/*=marker=SERIAL:,len=8" --filter "bin/*=z80"
+run(TRUE "${GRAFT}" pack -l 9 --label 3.0 --mask "bin/*=marker=SERIAL:,len=8" --filter "bin/*=z80" --user "etc/site.conf"
     -o "${WORK}/up.gfp" "${WORK}/r3" "${WORK}/r1=1.0" "${WORK}/r2=2.0")
 run(TRUE "${GRAFT}" list "${WORK}/up.gfp")
 if(NOT last MATCHES "updates \\[1.0, 2.0\\] to 3.0")
@@ -46,6 +49,7 @@ file(READ "${WORK}/inst-r1/bin/tool" t)
 string(REPLACE "SERIAL:00000000" "SERIAL:CUSTOMER" t "${t}")
 file(WRITE "${WORK}/inst-r1/bin/tool" "${t}")
 
+file(WRITE "${WORK}/inst-r1/etc/site.conf" "the admin's settings")
 run(TRUE "${GRAFT}" update --dry-run "${WORK}/up.gfp" "${WORK}/inst-r1")
 if(NOT EXISTS "${WORK}/inst-r1/etc/old.conf")
   message(FATAL_ERROR "dry run changed the tree")
@@ -53,6 +57,10 @@ endif()
 
 run(TRUE "${GRAFT}" update "${WORK}/up.gfp" "${WORK}/inst-r1")
 run(TRUE "${GRAFT}" update "${WORK}/up.gfp" "${WORK}/inst-r2")
+file(READ "${WORK}/inst-r1/etc/site.conf" mine)
+if(NOT mine STREQUAL "the admin's settings")
+  message(FATAL_ERROR "user-owned etc/site.conf was changed: ${mine}")
+endif()
 foreach(f etc/new.conf share/readme)
   expect_same("${WORK}/r3/${f}" "${WORK}/inst-r1/${f}")
   expect_same("${WORK}/r3/${f}" "${WORK}/inst-r2/${f}")

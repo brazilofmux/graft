@@ -47,10 +47,12 @@ void usage(std::FILE *out) {
         "  info PATCH       print a patch's header\n"
         "\n"
         "  pack [-l LEVEL] [--label NAME] [--mask GLOB=SPEC]... [--mask-file FILE]\n"
-        "       [--filter GLOB=FILTER]...\n"
+        "       [--filter GLOB=FILTER]... [--user GLOB]... [--user-file FILE]\n"
         "       -o PACKAGE NEW_DIR OLD_DIR[=LABEL]...\n"
         "                   write a package updating any OLD_DIR tree to NEW_DIR.\n"
         "                   GLOB: * within a path component, ** across, ? one char\n"
+        "                   --user: user-owned (config, data): installed only where\n"
+        "                   missing; never changed, removed or checked\n"
         "  update [--dry-run] PACKAGE DIR\n"
         "                   update the tree at DIR in place (all or nothing)\n"
         "  list PACKAGE     show a package's versions and contents\n"
@@ -349,6 +351,16 @@ uint8_t filter_for(void *ctx, const char *path) {
     return GRAFT_FILTER_AUTO;
 }
 
+struct OwnedRules {
+    std::vector<std::string> globs;
+};
+
+int user_owned(void *ctx, const char *path) {
+    for (const auto &g : static_cast<OwnedRules *>(ctx)->globs)
+        if (glob_match(g.c_str(), path)) return 1;
+    return 0;
+}
+
 bool add_filter_rule(FilterRules &fr, const std::string &item) {
     const auto eq = item.rfind('=');
     uint8_t f;
@@ -389,6 +401,7 @@ int cmd_pack(int argc, char **argv) {
     graft_pack_options_init(&opts);
     MaskRules rules;
     FilterRules frules;
+    OwnedRules owned;
     const char *out = nullptr, *label = nullptr;
     std::vector<const char *> pos;
     for (int i = 0; i < argc; ++i) {
@@ -401,6 +414,14 @@ int cmd_pack(int argc, char **argv) {
             out = argv[++i];
         } else if (a == "--label" && i + 1 < argc) {
             label = argv[++i];
+        } else if (a == "--user" && i + 1 < argc) {
+            owned.globs.emplace_back(argv[++i]);
+        } else if (a == "--user-file" && i + 1 < argc) {
+            std::string err;
+            if (!cli::read_mask_file(argv[++i], owned.globs, err)) {  // same line format: one entry per line, # comments
+                std::fprintf(stderr, "graft pack: %s\n", err.c_str());
+                return kExitFail;
+            }
         } else if (a == "--filter" && i + 1 < argc) {
             if (!add_filter_rule(frules, argv[++i])) {
                 std::fprintf(stderr, "graft pack: --filter wants GLOB=NAME, got '%s'\n", argv[i]);
@@ -462,6 +483,10 @@ int cmd_pack(int argc, char **argv) {
         opts.filter_for = filter_for;
         opts.filter_ctx = &frules;
     }
+    if (owned.globs.size()) {
+        opts.user_owned = user_owned;
+        opts.user_ctx = &owned;
+    }
     opts.log = log_to_stderr;
     if (graft_status st = graft_pack(pos[0], new_label.c_str(), dp.data(), lp.data(), dp.size(), out, &opts);
         st != GRAFT_OK)
@@ -520,6 +545,7 @@ int cmd_archive(int argc, char **argv) {
     graft_pack_options_init(&popts);
     MaskRules rules;
     FilterRules frules;
+    OwnedRules owned;
     for (int i = 1; i < argc; ++i) {
         const std::string_view a = argv[i];
         unsigned long v;
@@ -533,6 +559,8 @@ int cmd_archive(int argc, char **argv) {
                 std::fprintf(stderr, "graft archive mkpatch: --mask wants GLOB=SPEC\n");
                 return kExitUsage;
             }
+        } else if (sub == "mkpatch" && a == "--user" && i + 1 < argc) {
+            owned.globs.emplace_back(argv[++i]);
         } else if (sub == "mkpatch" && a == "--filter" && i + 1 < argc) {
             if (!add_filter_rule(frules, argv[++i])) {
                 std::fprintf(stderr, "graft archive mkpatch: --filter wants GLOB=NAME\n");
@@ -605,6 +633,10 @@ int cmd_archive(int argc, char **argv) {
         if (!frules.rules.empty()) {
             popts.filter_for = filter_for;
             popts.filter_ctx = &frules;
+        }
+        if (!owned.globs.empty()) {
+            popts.user_owned = user_owned;
+            popts.user_ctx = &owned;
         }
         if (graft_status st = graft_archive_mkpatch(ar.get(), pos[1], pos.data() + 2, pos.size() - 2, out, &popts);
             st != GRAFT_OK)

@@ -16,7 +16,9 @@ inline constexpr size_t kFooterSize = 24;  // manifest_offset, manifest_comp, ma
 inline constexpr uint64_t kMaxManifest = 256ull << 20;
 inline constexpr size_t kMaxString = 4096;
 
-enum EntryKind : uint8_t { kFile = 0, kDir = 1, kSymlink = 2, kRemove = 3 };
+// kSeed: a user-owned file. Installed (from its one full copy) only if the
+// path is absent; otherwise never read, changed, removed, or checked.
+enum EntryKind : uint8_t { kFile = 0, kDir = 1, kSymlink = 2, kRemove = 3, kSeed = 4 };
 enum RecipeKind : uint8_t { kDelta = 0, kFull = 1 };
 enum BlobKind : uint8_t { kBlobGft = 0, kBlobZstd = 1 };
 
@@ -89,6 +91,7 @@ inline void encode_manifest(const Manifest &m, std::vector<uint8_t> &out) {
         w.u8(e.kind);
         switch (e.kind) {
         case kFile:
+        case kSeed:
             w.uv(e.mode);
             w.uv(e.size);
             w.hash(e.current);
@@ -186,7 +189,8 @@ inline bool decode_manifest(const uint8_t *p, size_t n, Manifest &m) {
         if (e.path == kTxnDir || e.path.rfind(std::string(kTxnDir) + "/", 0) == 0) return false;
         uint64_t v;
         switch (e.kind) {
-        case kFile: {
+        case kFile:
+        case kSeed: {
             if (!r.uv(v) || v > 07777) return false;
             e.mode = static_cast<uint32_t>(v);
             if (!r.uv(e.size) || !r.hash(e.current) || !r.count(count, 2)) return false;
@@ -212,6 +216,8 @@ inline bool decode_manifest(const uint8_t *p, size_t n, Manifest &m) {
                 for (auto &l : rc.labels)
                     if (!r.uv(l) || l >= m.labels.size()) return false;
             }
+            if (e.kind == kSeed && (!e.regions.empty() || e.recipes.size() != 1 || e.recipes[0].kind != kFull))
+                return false;
             break;
         }
         case kDir:

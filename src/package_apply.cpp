@@ -175,6 +175,7 @@ struct Planner {
     const Log &log;
     std::vector<Action> actions;
     std::vector<std::string> conflicts;
+    std::vector<std::string> notes;  // informational: user-owned files left alone
     std::map<std::string, Kind> future;  // state after planned changes, where it differs
     std::set<std::string> creates;       // paths with a create entry
 
@@ -287,6 +288,25 @@ struct Planner {
         future[e.path] = Kind::Symlink;
     }
 
+    // User-owned: install only where nothing exists; never look further.
+    void plan_seed(const Entry &e) {
+        const Stat st = state(e.path);
+        if (st.kind == Kind::Unsafe) {
+            notes.push_back("not installing " + e.path + ": its path goes through a symlink or non-directory");
+            return;
+        }
+        if (st.kind != Kind::Missing) {
+            notes.push_back("keep   " + e.path + " (user-owned)");
+            return;
+        }
+        if (!ensure_parents(e.path)) return;
+        Action a{Action::Install, e.path, e.mode};
+        a.entry = &e;
+        a.recipe = 0;
+        actions.push_back(a);
+        future[e.path] = Kind::File;
+    }
+
     void plan_file(const Entry &e) {
         const Stat st = state(e.path);
         if (st.kind == Kind::Unsafe) return conflict(e.path, "path goes through a symlink or non-directory");
@@ -326,6 +346,7 @@ struct Planner {
             if (e.kind == kDir) plan_dir(e);
             else if (e.kind == kSymlink) plan_symlink(e);
             else if (e.kind == kFile) plan_file(e);
+            else if (e.kind == kSeed) plan_seed(e);
         }
     }
 
@@ -620,12 +641,13 @@ graft_status update_impl(const char *package_path, const char *root_dir, const g
         return s;
     }
 
-    Planner pl{root, pk, o.limits, log, {}, {}, {}, {}};
+    Planner pl{root, pk, o.limits, log, {}, {}, {}, {}, {}};
     pl.plan();
     if (!pl.conflicts.empty()) {
         for (const auto &c : pl.conflicts) log(GRAFT_LOG_ERROR, "conflict: " + c);
         return GRAFT_E_CONFLICT;
     }
+    for (const auto &n : pl.notes) log(GRAFT_LOG_INFO, n);
     for (const auto &a : pl.actions) log(GRAFT_LOG_INFO, pl.describe(a));
     if (pl.actions.empty()) log(GRAFT_LOG_INFO, "already up to date");
     if ((o.flags & GRAFT_UPDATE_DRY_RUN) || pl.actions.empty()) return GRAFT_OK;
@@ -699,6 +721,10 @@ graft_status describe_impl(const char *package_path, const Log &log) {
             log(GRAFT_LOG_INFO, line);
             break;
         }
+        case kSeed:
+            log(GRAFT_LOG_INFO, "seed    " + e.path + " (" + std::to_string(e.size) +
+                                    " bytes, user-owned: installed only where missing)");
+            break;
         case kDir: log(GRAFT_LOG_INFO, "dir     " + e.path); break;
         case kSymlink: log(GRAFT_LOG_INFO, "symlink " + e.path + " -> " + e.link); break;
         case kRemove: log(GRAFT_LOG_INFO, "remove  " + e.path); break;

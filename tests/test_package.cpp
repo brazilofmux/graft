@@ -355,3 +355,58 @@ TEST(package_describe) {
     CHECK(out.find("from lib/moved") != std::string::npos);
     CHECK(out.find("1 masked") != std::string::npos);
 }
+
+TEST(package_user_owned_files) {
+    // Modeled on TinyMUX's TOC.*.unpatched: configuration, the database and
+    // customizable text ship once and then belong to the admin.
+    TempDir t;
+    const fs::path v1 = t.path / "v1", v2 = t.path / "v2", pkg = t.path / "p.gfp";
+    std::mt19937 rng(9);
+    const std::string code = random_text(rng, 20000);
+    write(v1 / "bin/netmux", code);
+    write(v2 / "bin/netmux", code + "v2");
+    write(v1 / "game/netmux.conf", "port 2860\n");
+    write(v2 / "game/netmux.conf", "port 2860\nnew_option yes\n");  // the default changed
+    write(v1 / "game/data/netmux.db", "starter db");
+    write(v2 / "game/data/netmux.db", "starter db v2");
+    write(v1 / "game/text/motd.txt", "welcome");
+    write(v2 / "game/text/motd.txt", "welcome!");
+    write(v1 / "game/text/old.txt", "a screen dropped in v2");
+    write(v2 / "game/muxssl.conf", "ssl defaults");  // new in v2
+
+    graft_pack_options o;
+    graft_pack_options_init(&o);
+    o.level = 3;
+    o.user_owned = [](void *, const char *p) {
+        const std::string s = p;
+        return s.rfind("game/text/", 0) == 0 || s == "game/netmux.conf" || s == "game/muxssl.conf" ||
+                       s == "game/data/netmux.db"
+                   ? 1
+                   : 0;
+    };
+    const std::string a = v1.string();
+    const char *dirs[] = {a.c_str()};
+    CHECK_EQ(graft_pack(v2.string().c_str(), "v2", dirs, nullptr, 1, pkg.string().c_str(), &o), GRAFT_OK);
+
+    // An admin's install: edited config, a grown database, a deleted screen.
+    const fs::path inst = t.path / "inst";
+    fs::copy(v1, inst, fs::copy_options::recursive);
+    write(inst / "game/netmux.conf", "port 4201\n# mine\n");
+    write(inst / "game/data/netmux.db", "a year of building");
+    fs::remove(inst / "game/text/motd.txt");
+
+    CHECK_EQ(update(pkg, inst), GRAFT_OK);  // no conflicts from anything the admin owns
+    CHECK(read(inst / "bin/netmux") == code + "v2");                   // patched
+    CHECK(read(inst / "game/netmux.conf") == "port 4201\n# mine\n");  // left alone
+    CHECK(read(inst / "game/data/netmux.db") == "a year of building");
+    CHECK(read(inst / "game/text/old.txt") == "a screen dropped in v2");  // not removed
+    CHECK(read(inst / "game/muxssl.conf") == "ssl defaults");             // new: installed
+    CHECK(read(inst / "game/text/motd.txt") == "welcome!");               // missing: reinstalled
+    CHECK_EQ(update(pkg, inst), GRAFT_OK);                                // and idempotent
+
+    // A fresh copy of v1 gets the same treatment: unedited defaults stay too.
+    const fs::path fresh = t.path / "fresh";
+    fs::copy(v1, fresh, fs::copy_options::recursive);
+    CHECK_EQ(update(pkg, fresh), GRAFT_OK);
+    CHECK(read(fresh / "game/netmux.conf") == "port 2860\n");
+}

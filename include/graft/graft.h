@@ -230,6 +230,11 @@ typedef graft_status (*graft_mask_fn)(void *ctx, const char *path,
                                       const uint8_t *new_data, size_t new_len,
                                       graft_mask *masks, size_t cap, size_t *count);
 
+/* Nonzero if a path is user-owned: shipped once, then the user's. The
+ * package installs it only where it's missing, and never changes, removes
+ * or checks it (configuration, databases, customizable text). */
+typedef int (*graft_owned_fn)(void *ctx, const char *path);
+
 /* Picks the filter for one file (GRAFT_FILTER_*; AUTO if unsure). */
 typedef uint8_t (*graft_filter_fn)(void *ctx, const char *path);
 
@@ -242,6 +247,8 @@ typedef struct graft_pack_options {
     void         *log_ctx;
     graft_filter_fn filter_for; /* NULL: AUTO for every file              */
     void         *filter_ctx;
+    graft_owned_fn user_owned;  /* NULL: nothing is user-owned            */
+    void         *user_ctx;
 } graft_pack_options;
 
 GRAFT_API void graft_pack_options_init(graft_pack_options *opts);
