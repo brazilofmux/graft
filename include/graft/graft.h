@@ -254,7 +254,9 @@ typedef struct graft_pack_options {
 GRAFT_API void graft_pack_options_init(graft_pack_options *opts);
 
 /* Writes a package that updates any of the `old_count` old trees to the new
- * tree. Labels name the versions in logs and listings. */
+ * tree. Labels name the versions in logs and listings; a NULL `new_label`,
+ * `old_labels` or element defaults to that directory's own name (never its
+ * full path, which would record the builder's layout in the package). */
 GRAFT_API graft_status graft_pack(const char *new_dir, const char *new_label,
                                   const char *const *old_dirs, const char *const *old_labels,
                                   size_t old_count, const char *out_path,

@@ -510,10 +510,6 @@ int cmd_pack(int argc, char **argv) {
         if (const auto eq = d.rfind('='); eq != std::string::npos) {
             l = d.substr(eq + 1);
             d.resize(eq);
-        } else {
-            std::string base = d;
-            while (base.size() > 1 && base.back() == '/') base.pop_back();
-            l = base.substr(base.rfind('/') == std::string::npos ? 0 : base.rfind('/') + 1);
         }
         dirs.push_back(d);
         labels.push_back(l);
@@ -521,9 +517,8 @@ int cmd_pack(int argc, char **argv) {
     std::vector<const char *> dp, lp;
     for (size_t i = 0; i < dirs.size(); ++i) {
         dp.push_back(dirs[i].c_str());
-        lp.push_back(labels[i].c_str());
+        lp.push_back(labels[i].empty() ? nullptr : labels[i].c_str());  // null: the directory's name
     }
-    std::string new_label = label ? label : pos[0];
     if (rules.rules.size()) {
         opts.masks_for = masks_for;
         opts.masks_ctx = &rules;
@@ -537,7 +532,7 @@ int cmd_pack(int argc, char **argv) {
         opts.user_ctx = &owned;
     }
     opts.log = log_to_stderr;
-    if (graft_status st = graft_pack(pos[0], new_label.c_str(), dp.data(), lp.data(), dp.size(), out, &opts);
+    if (graft_status st = graft_pack(pos[0], label, dp.data(), lp.data(), dp.size(), out, &opts);
         st != GRAFT_OK)
         return fail("pack", st);
     return kExitOk;
@@ -562,7 +557,13 @@ int cmd_update(int argc, char **argv) {
         std::fputs("usage: graft update [--dry-run] PACKAGE DIR\n", stderr);
         return kExitUsage;
     }
-    if (graft_status st = graft_update(pos[0], pos[1], &opts); st != GRAFT_OK) return fail("update", st);
+    if (graft_status st = graft_update(pos[0], pos[1], &opts); st != GRAFT_OK) {
+        if (st == GRAFT_E_CONFLICT) {  // the reasons were logged above
+            std::fputs("graft: update: refused; nothing was changed\n", stderr);
+            return kExitFail;
+        }
+        return fail("update", st);
+    }
     return kExitOk;
 }
 

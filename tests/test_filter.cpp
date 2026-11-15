@@ -112,7 +112,7 @@ TEST(filter_auto_never_worse) {
         graft_diff_options o;
         graft_diff_options_init(&o);
         o.level = 3;
-        o.filter = i ? GRAFT_FILTER_AUTO : GRAFT_FILTER_NONE;
+        o.filter = static_cast<uint8_t>(i ? GRAFT_FILTER_AUTO : GRAFT_FILTER_NONE);
         VecSink s;
         graft_sink sink = s.sink();
         CHECK_EQ(graft_diff(oldb.data(), oldb.size(), newb.data(), newb.size(), &o, &sink), GRAFT_OK);

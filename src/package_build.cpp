@@ -16,6 +16,18 @@
 namespace graft::pkg {
 namespace {
 
+// A tree's default label: its own directory name. Never the full path, which
+// would put the builder's local layout (C:\\Users\\..., /home/...) into a
+// package that gets distributed.
+std::string dir_label(const fs::path &dir) {
+    std::error_code ec;
+    fs::path p = fs::absolute(dir, ec);
+    if (ec) p = dir;
+    p = p.lexically_normal();
+    if (!p.has_filename()) p = p.parent_path();  // "a/b/" and "a/." -> "a/b", "a"
+    return u8str(p.filename());
+}
+
 // Package entry kinds and tree node kinds share values.
 static_assert(int{kFile} == int{kNodeFile} && int{kDir} == int{kNodeDir} && int{kSymlink} == int{kNodeSymlink});
 
@@ -333,11 +345,11 @@ graft_status pack_impl(const char *new_dir, const char *new_label, const char *c
 
     HashingFile out(f.get());
     Builder b{opts, log, out, {}, {}, {}, {}, u8path(new_dir), {}, {}, {}};
-    b.m.target_label = new_label ? new_label : "";
+    b.m.target_label = new_label ? new_label : dir_label(b.new_root);
     if (graft_status s = scan(b.new_root, b.nw, log); s != GRAFT_OK) return s;
     for (size_t i = 0; i < old_count; ++i) {
         b.old_roots.push_back(u8path(old_dirs[i]));
-        b.m.labels.emplace_back(old_labels && old_labels[i] ? old_labels[i] : old_dirs[i]);
+        b.m.labels.emplace_back(old_labels && old_labels[i] ? std::string(old_labels[i]) : dir_label(b.old_roots.back()));
         b.olds.emplace_back();
         if (graft_status s = scan(b.old_roots.back(), b.olds.back(), log); s != GRAFT_OK) return s;
     }

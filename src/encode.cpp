@@ -243,7 +243,8 @@ graft_status make_controls(const uint8_t *old, size_t oldsize, const uint8_t *nw
         return GRAFT_OK;
     }
     const auto on = static_cast<int64_t>(oldsize), nn = static_cast<int64_t>(newsize);
-    if (method == GRAFT_METHOD_AUTO) method = oldsize <= kSuffixLimit ? GRAFT_METHOD_SUFFIX : GRAFT_METHOD_ROLLING;
+    if (method == GRAFT_METHOD_AUTO)
+        method = static_cast<uint8_t>(oldsize <= kSuffixLimit ? GRAFT_METHOD_SUFFIX : GRAFT_METHOD_ROLLING);
     if (method == GRAFT_METHOD_ROLLING) {
         rolling_controls(old, on, nw, nn, out);
         return GRAFT_OK;

@@ -364,6 +364,23 @@ TEST(package_describe) {
     CHECK(out.find("1 masked") != std::string::npos);
 }
 
+TEST(package_default_labels_are_directory_names) {
+    // Unlabelled trees are named by their own directory, not the builder's full path.
+    Fixture f;
+    graft_pack_options o;
+    graft_pack_options_init(&o);
+    const std::string a = f.v1.string() + "/", b = f.v2.string();
+    const char *dirs[] = {a.c_str(), b.c_str()};
+    CHECK_EQ(graft_pack(f.v3.string().c_str(), nullptr, dirs, nullptr, 2, f.pkg.string().c_str(), &o), GRAFT_OK);
+    static std::string out;
+    out.clear();
+    CHECK_EQ(graft_package_describe(f.pkg.string().c_str(),
+                                    [](void *, int, const char *m) { out += std::string(m) + "\n"; }, nullptr),
+             GRAFT_OK);
+    CHECK(out.find("updates [v1, v2] to v3") != std::string::npos);
+    CHECK(out.find(f.tmp.path.filename().string()) == std::string::npos);
+}
+
 TEST(package_user_owned_files) {
     // Modeled on TinyMUX's TOC.*.unpatched: configuration, the database and
     // customizable text ship once and then belong to the admin.

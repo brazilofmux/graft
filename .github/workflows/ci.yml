@@ -46,7 +46,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - run: cmake --preset windows
+      # Warnings are errors here, as in the other presets; not in the preset itself,
+      # so a newer MSVC on someone's own machine warns rather than breaks.
+      - run: cmake --preset windows -DGRAFT_WERROR=ON
       - run: cmake --build --preset windows --parallel
       - run: ctest --preset windows
 

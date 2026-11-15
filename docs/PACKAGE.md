@@ -63,6 +63,9 @@ recipe   := kind:u8 [source_path:str if kind = 0] blob:uv n:uv label:uv[n]
   control characters, the reserved top-level `.graft-txn`, and two paths
   that differ only by ASCII case.
 - **Modes** are POSIX permission bits, at most `07777`.
+  On Windows modes aren't applied. A file the package writes is a fresh file, so a
+  read-only attribute set on the old copy doesn't carry over; user-owned files
+  aren't written and keep theirs.
 
 ## Updating
 
