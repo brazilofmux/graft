@@ -19,8 +19,11 @@ append-only versioned archives, and two matchers. Some caveats:
 - **The formats aren't frozen.** [`.gft`](docs/FORMAT.md),
   [`.gfp`](docs/PACKAGE.md) and [`.gfa`](docs/ARCHIVE.md) are version 1 and
   may still change incompatibly before a 1.0 release.
-- **POSIX only for now** (macOS, Linux). The library uses `std::filesystem`,
-  but Windows specifics (replacing files that are in use, ACLs) aren't done.
+- **Platforms:** macOS and Linux, and Windows with MSVC (built and tested in
+  CI on `windows-latest`). On Windows, an update refuses before changing
+  anything if another program holds a file it must replace (it names the
+  file), and refuses names Windows can't create. Symlinks need the
+  privilege Windows requires to create them.
 - **Patches, packages and archives are treated as untrusted:** every field is
   bounds-checked, and the parsers are fuzzed continuously in CI. The code
   hasn't had an independent security review.
@@ -101,6 +104,14 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | `fetch` | Like `dev`, but downloads every dependency (as on a clean machine) |
 | `fuzz` | libFuzzer targets, using `clang` from PATH |
 | `fuzz-macos` | libFuzzer targets, using Homebrew LLVM (`brew install llvm`); Apple clang has no libFuzzer |
+| `windows` | Visual Studio generator, static runtime, dependencies downloaded |
+
+On Windows, from a Visual Studio developer prompt (the preset uses the static
+runtime, so `graft.exe` needs nothing installed beside it):
+
+```bat
+cmake --preset windows && cmake --build --preset windows && ctest --preset windows
+```
 
 ```sh
 cmake --preset fuzz-macos && cmake --build --preset fuzz-macos
