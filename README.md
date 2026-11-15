@@ -9,8 +9,21 @@ versions, whole trees), and JAR32-style multi-version archives.
 - `graft archive`: a versioned archive that can extract any version and
   generate a patch from any set of versions
 
-Status: **M4**. Single files (with masked regions), whole directory trees, and versioned archives work, in the `.gft` v1 format
-([docs/FORMAT.md](docs/FORMAT.md)). See [docs/SCOPE.md](docs/SCOPE.md) for the plan.
+[![ci](https://github.com/brazilofmux/graft/actions/workflows/ci.yml/badge.svg)](https://github.com/brazilofmux/graft/actions/workflows/ci.yml)
+
+**Status: experimental.** Everything in [docs/SCOPE.md](docs/SCOPE.md)'s
+milestones M0–M5 works: single files (with masked regions and executable
+filters), multi-version directory-tree packages with transactional update,
+append-only versioned archives, and two matchers. Some caveats:
+
+- **The formats aren't frozen.** [`.gft`](docs/FORMAT.md),
+  [`.gfp`](docs/PACKAGE.md) and [`.gfa`](docs/ARCHIVE.md) are version 1 and
+  may still change incompatibly before a 1.0 release.
+- **POSIX only for now** (macOS, Linux). The library uses `std::filesystem`,
+  but Windows specifics (replacing files that are in use, ACLs) aren't done.
+- **Patches, packages and archives are treated as untrusted:** every field is
+  bounds-checked, and the parsers are fuzzed continuously in CI. The code
+  hasn't had an independent security review.
 
 ```sh
 graft diff OLD NEW PATCH        # -l LEVEL (zstd 1-22, default 19), -b BLOCK (bytes)

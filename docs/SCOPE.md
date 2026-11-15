@@ -26,11 +26,11 @@ multi-version archive of JAR32.
 - **Container:** our own `.gft` format, versioned, with zstd-compressed
   streams and a hash of the source, the target and the patch itself (BLAKE3).
   It refuses to run against the wrong source.
-- **Executable filters** (preprocessing that makes executables delta better):
-  rewrite relative branch and call targets to absolute ones before
-  diffing, and back again after (BCJ, Courgette or Zucchini style). Instruction
-  decoding can come from our own emulators: **x86** (`~/x86`, 8086 through P4,
-  16 and 32 bit), **Z80** (`~/z80`), and **SLOW-32** (`~/slow-32`).
+- **Executable filters** (preprocessing that makes executables delta better).
+  Planned as BCJ-style rel→abs rewrites; measurement showed that for this
+  encoder the useful direction is abs→rel (see M5a below). Instruction
+  knowledge comes from the sibling emulator projects: [x86](https://github.com/brazilofmux/x86) (8086
+  through P4), [z80](https://github.com/brazilofmux/z80), and [SLOW-32](https://github.com/brazilofmux/slow32-public).
 - C ABI (`graft.h`) over a C++20 implementation.
 
 ### 2. `graft`: patch packages (RTPatch-class)
@@ -72,10 +72,10 @@ multi-version archive of JAR32.
 ## Test corpus and platforms (from the sibling projects)
 - **A real multi-version corpus:** DOS and CP/M software that shipped
   serialized point releases (WordPerfect, WordStar, Turbo Pascal, DOS and
-  Windows versions on `~/x86` disk images). This is the kind of software
+  Windows versions, as run by the [x86](https://github.com/brazilofmux/x86) emulator). This is the kind of software
   RTPatch and JAR32 were built for, and its serial-stamped binaries exercise
   masked regions directly. The copyrighted binaries stay out of the repo, as
-  they do in `~/z80` and `~/x86`.
+  they do in the emulator projects.
 - **End-to-end tests inside emulators:** apply patches to disk images and
   boot them in `dos-monster` and `z80-monster`, so "it still runs" is
   checked as well as hashes matching.
@@ -84,11 +84,10 @@ multi-version archive of JAR32.
   in that sandbox. That keeps the decoder honest about its dependencies,
   gives a 32-bit target, and provides a way to apply untrusted patches in
   isolation. A 16-bit DOS applier is a stretch goal.
-- **Toolchains:** the SLOW-32 build uses the existing `~/llvm-project/build`
-  through `SLOW32_HOME=~/slow-32`, which `~/slow-32` depends on. graft
-  treats both as read-only and never reconfigures or rebuilds them. Fuzzing
-  on the Mac uses Homebrew's `llvm` (for libFuzzer), and ASan and UBSan use
-  Apple clang.
+- **Toolchains:** the SLOW-32 build uses an existing SLOW-32 toolchain
+  (its LLVM backend, libc++, assembler and linker) read-only; see
+  `tools/slow32/build.sh` for the variables that locate it. Fuzzing on macOS
+  uses Homebrew's `llvm` (Apple clang has no libFuzzer).
 
 ## Non-goals
 - Version control (branches, merges, history semantics); the archive is
